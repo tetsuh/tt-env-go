@@ -1,9 +1,11 @@
 package cli
 
 import (
-	"log/slog"
+	"context"
+	"fmt"
 
 	"github.com/spf13/cobra"
+	"github.com/tetsuh/tt-env-go/pkg/install"
 )
 
 var (
@@ -13,21 +15,32 @@ var (
 
 // installCmd represents the install command
 var installCmd = &cobra.Command{
-	Use:   "install [release]",
+	Use:   "install <release>",
 	Short: "Install a specific Tenstorrent stack release",
 	Long:  `Downloads, processes, and installs dependencies for a Tenstorrent stack release.`,
-	Args:  cobra.MaximumNArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		release := "latest"
-		if len(args) > 0 {
-			release = args[0]
-		}
-		slog.Info("Running install command",
-			slog.String("release", release),
-			slog.Bool("dry-run", dryRun),
-			slog.Bool("force", force),
-		)
-	},
+	Args:  cobra.ExactArgs(1),
+	RunE:  runInstall,
+}
+
+// runInstall installs the requested release via the install orchestrator.
+func runInstall(cmd *cobra.Command, args []string) error {
+	release := args[0]
+
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	out := cmd.OutOrStdout()
+	orch := &install.Orchestrator{
+		Root: ttHome(),
+		Logf: func(format string, a ...any) {
+			fmt.Fprintf(out, format+"\n", a...)
+		},
+	}
+
+	_, err := orch.Install(ctx, release, dryRun, force)
+	return err
 }
 
 func init() {
