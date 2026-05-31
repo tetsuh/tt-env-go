@@ -71,10 +71,10 @@ func (d *Detector) lspci() string {
 }
 
 func (d *Detector) vendorID() string {
-	if d.VendorID != "" {
-		return d.VendorID
+	if v := strings.ToLower(strings.TrimSpace(d.VendorID)); v != "" {
+		return v
 	}
-	if env := os.Getenv(envVendorID); env != "" {
+	if env := strings.ToLower(strings.TrimSpace(os.Getenv(envVendorID))); env != "" {
 		return env
 	}
 	return DefaultVendorID
@@ -88,7 +88,7 @@ func (d *Detector) Detect(ctx context.Context) ([]Device, error) {
 		return nil, commandError(d.lspci()+" -Dnn", out, err)
 	}
 
-	vendor := strings.ToLower(strings.TrimSpace(d.vendorID()))
+	vendor := d.vendorID()
 	marker := "[" + vendor + ":"
 
 	var devices []Device

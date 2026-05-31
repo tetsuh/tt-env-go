@@ -140,6 +140,21 @@ func TestDetectCustomLspciPath(t *testing.T) {
 	}
 }
 
+func TestDetectWhitespaceVendorFallsBackToDefault(t *testing.T) {
+	runner := &packagemanager.MockRunner{Strict: true, Responses: []packagemanager.CommandResponse{
+		{Output: []byte(lspciWithTenstorrent)},
+	}}
+	d := &Detector{Runner: runner, VendorID: "  "}
+
+	devices, err := d.Detect(context.Background())
+	if err != nil {
+		t.Fatalf("Detect() error = %v", err)
+	}
+	if len(devices) != 2 {
+		t.Errorf("got %d devices, want 2 (whitespace VendorID must fall back to default)", len(devices))
+	}
+}
+
 func TestParseDeviceMissingClassColon(t *testing.T) {
 	// Defensive: a line without the "]: " class separator should still yield
 	// address and vendor/device ids.
