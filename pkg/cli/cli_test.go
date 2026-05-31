@@ -98,3 +98,29 @@ func TestCaptureRequiresSingleRelease(t *testing.T) {
 		t.Error("expected capture to reject two arguments")
 	}
 }
+
+func TestStatusCommand(t *testing.T) {
+	status := findCommand("status")
+	if status == nil {
+		t.Fatal("status command is not registered")
+	}
+
+	if err := status.Args(status, []string{"unexpected"}); err == nil {
+		t.Error("expected status to reject positional arguments")
+	}
+
+	// Point TT_HOME at an empty temp dir so the command degrades gracefully
+	// (no active/installed releases) and produces a non-empty report.
+	t.Setenv("TT_HOME", t.TempDir())
+
+	buf := new(bytes.Buffer)
+	status.SetOut(buf)
+	t.Cleanup(func() { status.SetOut(nil) })
+
+	if err := runStatus(status); err != nil {
+		t.Fatalf("runStatus() error = %v", err)
+	}
+	if buf.Len() == 0 {
+		t.Error("expected status command to produce output")
+	}
+}

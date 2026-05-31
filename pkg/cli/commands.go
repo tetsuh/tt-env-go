@@ -42,9 +42,10 @@ var listCmd = &cobra.Command{
 var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show environment and hardware status",
-	Long:  `Probes and prints the active Tenstorrent environment version, system kernel driver status, and detected hardware devices.`,
-	Run: func(cmd *cobra.Command, args []string) {
-		slog.Info("Running status command")
+	Long:  `Probes and prints the active Tenstorrent environment version, installed releases, detected hardware, and KMD/Secure Boot state.`,
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runStatus(cmd)
 	},
 }
 
