@@ -300,6 +300,8 @@ func TestProvisionInvalidInputs(t *testing.T) {
 		"empty version":   {"tt-studio", Component{studioURL, ""}},
 		"option version":  {"tt-studio", Component{studioURL, "-x"}},
 		"control version": {"tt-studio", Component{studioURL, "v1\n"}},
+		"space name":      {"bad name", Component{studioURL, studioSHA}},
+		"newline name":    {"bad\nname", Component{studioURL, studioSHA}},
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -311,4 +313,43 @@ func TestProvisionInvalidInputs(t *testing.T) {
 			wantCommands(t, runner, nil)
 		})
 	}
+}
+
+// TestProvisionInvalidEntryNoSideEffects ensures a manifest containing a valid
+// and an invalid component fails before cloning the valid one or creating
+// srcDir, so malformed input never produces partial provisioning.
+func TestProvisionInvalidEntryNoSideEffects(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "src")
+	runner := &packagemanager.MockRunner{Strict: true}
+	c := &Cloner{Runner: runner}
+
+	err := c.Provision(context.Background(), dir, map[string]Component{
+		"tt-studio": {URL: studioURL, Version: studioSHA},
+		"bad":       {URL: "", Version: studioSHA},
+	})
+	if err == nil {
+		t.Fatalf("Provision: expected error for invalid entry")
+	}
+	wantCommands(t, runner, nil)
+	if _, statErr := os.Stat(dir); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("srcDir should not be created when validation fails, stat err = %v", statErr)
+	}
+}
+
+func TestProvisionRejectsSymlinkComponentDir(t *testing.T) {
+	dir := t.TempDir()
+	target := t.TempDir()
+	link := filepath.Join(dir, "tt-studio")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	runner := &packagemanager.MockRunner{Strict: true}
+	c := &Cloner{Runner: runner}
+
+	if err := c.Provision(context.Background(), dir, map[string]Component{
+		"tt-studio": {URL: studioURL, Version: studioSHA},
+	}); err == nil {
+		t.Fatalf("Provision: expected error for symlinked component dir")
+	}
+	wantCommands(t, runner, nil)
 }

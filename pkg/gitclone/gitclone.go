@@ -71,6 +71,12 @@ func (c *Cloner) Provision(ctx context.Context, srcDir string, components map[st
 	}
 	sort.Strings(names)
 
+	for _, name := range names {
+		if err := validateComponent(name, components[name]); err != nil {
+			return err
+		}
+	}
+
 	if err := os.MkdirAll(srcDir, 0o755); err != nil {
 		return fmt.Errorf("gitclone: create source directory: %w", err)
 	}
@@ -85,16 +91,6 @@ func (c *Cloner) Provision(ctx context.Context, srcDir string, components map[st
 
 // clone clones (or reuses) a single component and checks it out at its pin.
 func (c *Cloner) clone(ctx context.Context, srcDir, name string, comp Component) error {
-	if err := validateComponentName(name); err != nil {
-		return err
-	}
-	if err := validateToken("component url", comp.URL); err != nil {
-		return err
-	}
-	if err := validateToken("component version", comp.Version); err != nil {
-		return err
-	}
-
 	componentDir := filepath.Join(srcDir, name)
 
 	needClone, err := c.needsClone(ctx, componentDir, comp.URL)
@@ -122,12 +118,15 @@ func (c *Cloner) clone(ctx context.Context, srcDir, name string, comp Component)
 // readable git repository or points at a different remote is rejected rather
 // than silently overwritten.
 func (c *Cloner) needsClone(ctx context.Context, componentDir, url string) (bool, error) {
-	info, err := os.Stat(componentDir)
+	info, err := os.Lstat(componentDir)
 	if errors.Is(err, os.ErrNotExist) {
 		return true, nil
 	}
 	if err != nil {
 		return false, fmt.Errorf("gitclone: stat %s: %w", componentDir, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return false, fmt.Errorf("gitclone: %s exists and is a symlink", componentDir)
 	}
 	if !info.IsDir() {
 		return false, fmt.Errorf("gitclone: %s exists and is not a directory", componentDir)
@@ -179,6 +178,17 @@ func (c *Cloner) runGit(ctx context.Context, componentDir string, sub ...string)
 	return nil
 }
 
+// validateComponent checks a component's name, url, and version.
+func validateComponent(name string, comp Component) error {
+	if err := validateComponentName(name); err != nil {
+		return err
+	}
+	if err := validateToken("component url", comp.URL); err != nil {
+		return err
+	}
+	return validateToken("component version", comp.Version)
+}
+
 // validateComponentName ensures name is a single, safe path element.
 func validateComponentName(name string) error {
 	if name == "" {
@@ -190,6 +200,11 @@ func validateComponentName(name string) error {
 	}
 	if strings.HasPrefix(name, "-") {
 		return fmt.Errorf("gitclone: component name must not start with '-': %q", name)
+	}
+	for _, r := range name {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return fmt.Errorf("gitclone: component name must not contain whitespace or control characters: %q", name)
+		}
 	}
 	return nil
 }
