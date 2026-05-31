@@ -35,7 +35,7 @@ func runUpdate(cmd *cobra.Command, self bool) error {
 		Repo:    os.Getenv("TT_UPDATE_MANIFESTS_REPO"),
 		Ref:     os.Getenv("TT_UPDATE_MANIFESTS_REF"),
 		Token:   token,
-		Fetcher: update.HTTPFetcher{},
+		Fetcher: update.CurlFetcher{},
 	}
 	res, err := u.Update(ctx)
 	if err != nil {
