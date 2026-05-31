@@ -41,7 +41,7 @@ func newTestSwapper(runner packagemanager.CommandRunner) *Swapper {
 	return &Swapper{
 		Runner:   runner,
 		Sudo:     true,
-		LookPath: toolsPresent("lsmod", "rmmod", "modprobe", "lsof", "fuser", "ps"),
+		LookPath: toolsPresent("lsmod", "rmmod", "modprobe", "lsof", "fuser", "ps", "sudo"),
 		Glob:     noDevices,
 	}
 }
@@ -137,7 +137,7 @@ func TestSwapHoldersFuserFallback(t *testing.T) {
 	}}
 	s := newTestSwapper(runner)
 	s.Glob = oneDevice
-	s.LookPath = toolsPresent("lsmod", "rmmod", "modprobe", "fuser", "ps") // no lsof
+	s.LookPath = toolsPresent("lsmod", "rmmod", "modprobe", "fuser", "ps", "sudo") // no lsof
 	s.SecureBoot = safeSecureBoot(t, runner)
 
 	res, err := s.Swap(context.Background())
@@ -161,7 +161,7 @@ func TestSwapNoHolderTool(t *testing.T) {
 	runner := &packagemanager.MockRunner{Strict: true}
 	s := newTestSwapper(runner)
 	s.Glob = oneDevice
-	s.LookPath = toolsPresent("lsmod", "rmmod", "modprobe") // no lsof/fuser
+	s.LookPath = toolsPresent("lsmod", "rmmod", "modprobe", "sudo") // no lsof/fuser
 	s.SecureBoot = safeSecureBoot(t, runner)
 
 	if _, err := s.Swap(context.Background()); !errors.Is(err, ErrNoHolderTool) {
@@ -320,6 +320,31 @@ func TestHoldersLsofNoHolders(t *testing.T) {
 	}
 	if holders != nil {
 		t.Errorf("Holders() = %v, want nil", holders)
+	}
+}
+
+func TestHoldersLsofErrorFailsClosed(t *testing.T) {
+	// lsof exits zero when it finds holders, so a non-zero exit with output is
+	// a genuine failure that must fail closed rather than report no holders.
+	runner := &packagemanager.MockRunner{Strict: true, Responses: []packagemanager.CommandResponse{
+		{Output: []byte("lsof: WARNING: can't stat() tracefs file system"), Err: errors.New("exit status 1")},
+	}}
+	s := newTestSwapper(runner)
+	s.Glob = oneDevice
+
+	if _, err := s.Holders(context.Background()); err == nil {
+		t.Fatal("Holders() = nil error, want fail-closed error on lsof failure")
+	}
+}
+
+func TestSwapRequiresSudoWhenEnabled(t *testing.T) {
+	runner := &packagemanager.MockRunner{Strict: true}
+	s := newTestSwapper(runner)
+	s.Sudo = true
+	s.LookPath = toolsPresent("lsmod", "rmmod", "modprobe") // sudo missing
+
+	if _, err := s.Swap(context.Background()); err == nil {
+		t.Fatal("Swap() = nil error, want required-command error for missing sudo")
 	}
 }
 

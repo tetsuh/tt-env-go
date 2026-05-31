@@ -221,11 +221,15 @@ func (s *Swapper) Swap(ctx context.Context) (SwapResult, error) {
 // requireCommands verifies the mutating/inspection tools needed for a swap are
 // available, returning a clear error when one is missing.
 func (s *Swapper) requireCommands() error {
-	for _, name := range []string{
+	names := []string{
 		cmdName(s.Lsmod, "lsmod"),
 		cmdName(s.Rmmod, "rmmod"),
 		cmdName(s.Modprobe, "modprobe"),
-	} {
+	}
+	if s.Sudo {
+		names = append(names, "sudo")
+	}
+	for _, name := range names {
 		if _, err := s.lookPath()(name); err != nil {
 			return fmt.Errorf("kmd: required command %q not found: %w", name, err)
 		}
@@ -293,13 +297,18 @@ func (s *Swapper) commandAvailable(name string) bool {
 
 // lsofHolders parses `lsof -F pc -- <devices>` output. lsof exits non-zero when
 // no file has a holder, so a non-nil error with empty output is treated as "no
-// holders" (matching proto1).
+// holders" (matching proto1). Because lsof exits zero whenever it finds a
+// holder, a non-nil error with non-empty output is a genuine failure and fails
+// closed rather than silently reporting no holders.
 func (s *Swapper) lsofHolders(ctx context.Context, lsof string, devices []string) ([]Holder, error) {
 	args := append([]string{"-F", "pc", "--"}, devices...)
 	out, err := s.runner().Run(ctx, lsof, args...)
 	text := strings.TrimSpace(string(out))
 	if err != nil && text == "" {
 		return nil, nil
+	}
+	if err != nil {
+		return nil, commandError(lsof, args, out, err)
 	}
 
 	var holders []Holder
@@ -334,7 +343,12 @@ func (s *Swapper) lsofHolders(ctx context.Context, lsof string, devices []string
 }
 
 // fuserHolders parses `fuser -- <devices>` output for numeric PIDs and resolves
-// each command name via `ps -p <pid> -o comm=`.
+// each command name via `ps -p <pid> -o comm=`. Unlike lsof, fuser exits
+// non-zero even on the normal "no holders" case and always writes the file name
+// to stderr, which the combined-output runner merges into out. The exit code
+// therefore cannot distinguish "no holders" from a fatal error, so this stays
+// lenient (proto1-faithful) and relies on numeric-PID extraction: a genuine
+// failure yields no numeric PIDs and is reported as no holders.
 func (s *Swapper) fuserHolders(ctx context.Context, fuser string, devices []string) ([]Holder, error) {
 	args := append([]string{"--"}, devices...)
 	out, err := s.runner().Run(ctx, fuser, args...)
