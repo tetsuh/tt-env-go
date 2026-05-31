@@ -103,6 +103,28 @@ func TestRemoveLeavesCurrentPointingElsewhere(t *testing.T) {
 	}
 }
 
+func TestRemoveLeavesNonSymlinkCurrentUntouched(t *testing.T) {
+	root := t.TempDir()
+	inst := &Installer{Root: root}
+	if _, err := inst.Install("2026.05.16", func(string) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	// A regular file occupying the current path: Readlink returns EINVAL.
+	if err := os.WriteFile(inst.CurrentLink(), []byte("not a link"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := inst.Remove("2026.05.16"); err != nil {
+		t.Fatalf("Remove() error = %v", err)
+	}
+	if inst.IsInstalled("2026.05.16") {
+		t.Error("release should be removed")
+	}
+	if _, err := os.Lstat(inst.CurrentLink()); err != nil {
+		t.Errorf("non-symlink current path must be preserved, lstat err = %v", err)
+	}
+}
+
 func TestRemoveRejectsUninstalledRelease(t *testing.T) {
 	inst := &Installer{Root: t.TempDir()}
 	err := inst.Remove("2026.05.16")

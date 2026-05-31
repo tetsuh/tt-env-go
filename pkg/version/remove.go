@@ -1,9 +1,11 @@
 package version
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 // Remove uninstalls an installed release. It validates the release name and
@@ -43,12 +45,16 @@ func (i *Installer) Remove(release string) error {
 // currentPointsAt reports whether the current symlink resolves to releaseDir.
 // Relative link targets are resolved against the link's directory. A missing
 // current link, or a current path that is not a symlink, reports false without
-// error so the existing path is left untouched.
+// error so the existing path is left untouched; other errors (for example
+// permission or I/O failures) are propagated so removal does not silently leave
+// a dangling active release behind.
 func (i *Installer) currentPointsAt(releaseDir string) (bool, error) {
 	target, err := os.Readlink(i.CurrentLink())
 	if err != nil {
-		// Missing link or non-symlink path: nothing to clear.
-		return false, nil
+		if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.EINVAL) {
+			return false, nil
+		}
+		return false, fmt.Errorf("version: read current link: %w", err)
 	}
 	if !filepath.IsAbs(target) {
 		target = filepath.Join(filepath.Dir(i.CurrentLink()), target)
