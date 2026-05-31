@@ -23,6 +23,21 @@ func TestCommandsAdded(t *testing.T) {
 }
 
 func TestExecuteRootCommand(t *testing.T) {
+	// Save original values
+	origOut := RootCmd.OutOrStdout()
+	origErr := RootCmd.ErrOrStderr()
+	origArgs := RootCmd.Args
+
+	// Restore after test
+	t.Cleanup(func() {
+		RootCmd.SetOut(origOut)
+		RootCmd.SetErr(origErr)
+		RootCmd.SetArgs(nil)
+		if origArgs != nil {
+			RootCmd.Args = origArgs
+		}
+	})
+
 	buf := new(bytes.Buffer)
 	RootCmd.SetOut(buf)
 	RootCmd.SetErr(buf)
