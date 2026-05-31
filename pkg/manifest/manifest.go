@@ -3,9 +3,11 @@
 package manifest
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 )
 
 // Manifest is the typed representation of a release manifest JSON file
@@ -13,7 +15,7 @@ import (
 type Manifest struct {
 	Release             string                        `json:"release"`
 	Description         string                        `json:"description"`
-	Components          map[string]string             `json:"components"`
+	Components          map[string]Component          `json:"components"`
 	SystemPackages      map[string]string             `json:"system_packages"`
 	PythonPackages      map[string]string             `json:"python_packages"`
 	GitComponents       map[string]GitComponent       `json:"git_components"`
@@ -25,6 +27,67 @@ type Manifest struct {
 type GitComponent struct {
 	URL     string `json:"url"`
 	Version string `json:"version"`
+}
+
+// componentSHA256Re matches a lowercase- or uppercase-hex SHA-256 digest.
+var componentSHA256Re = regexp.MustCompile(`^[A-Fa-f0-9]{64}$`)
+
+// Component describes a stack component entry. In a manifest it may be written
+// either as a bare version string or as an object with a version and the
+// download_url/sha256 needed when system-package installation is disabled.
+type Component struct {
+	Version     string
+	DownloadURL string
+	SHA256      string
+}
+
+// componentObject is the object form of a Component used for (un)marshalling.
+type componentObject struct {
+	Version     string `json:"version,omitempty"`
+	DownloadURL string `json:"download_url,omitempty"`
+	SHA256      string `json:"sha256,omitempty"`
+}
+
+// UnmarshalJSON accepts either a bare JSON string (interpreted as the version)
+// or an object with version/download_url/sha256. Other JSON types are rejected.
+func (c *Component) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return fmt.Errorf("component: empty value")
+	}
+	switch trimmed[0] {
+	case '"':
+		var s string
+		if err := json.Unmarshal(trimmed, &s); err != nil {
+			return err
+		}
+		c.Version = s
+		c.DownloadURL = ""
+		c.SHA256 = ""
+		return nil
+	case '{':
+		dec := json.NewDecoder(bytes.NewReader(trimmed))
+		dec.DisallowUnknownFields()
+		var obj componentObject
+		if err := dec.Decode(&obj); err != nil {
+			return err
+		}
+		c.Version = obj.Version
+		c.DownloadURL = obj.DownloadURL
+		c.SHA256 = obj.SHA256
+		return nil
+	default:
+		return fmt.Errorf("component: must be a string or an object, got %s", string(trimmed))
+	}
+}
+
+// MarshalJSON emits a bare string when only Version is set, preserving the
+// string form of components that carry no download metadata.
+func (c Component) MarshalJSON() ([]byte, error) {
+	if c.DownloadURL == "" && c.SHA256 == "" {
+		return json.Marshal(c.Version)
+	}
+	return json.Marshal(componentObject(c))
 }
 
 // ContainerComponent describes a container-sourced component. It is valid in one
@@ -62,6 +125,20 @@ func Load(path string) (*Manifest, error) {
 func (m *Manifest) Validate() error {
 	if m.Release == "" {
 		return fmt.Errorf(`missing required field "release"`)
+	}
+
+	for name, c := range m.Components {
+		if c.DownloadURL != "" || c.SHA256 != "" {
+			if c.DownloadURL == "" {
+				return fmt.Errorf("component %q: missing required field \"download_url\"", name)
+			}
+			if c.SHA256 == "" {
+				return fmt.Errorf("component %q: missing required field \"sha256\"", name)
+			}
+			if !componentSHA256Re.MatchString(c.SHA256) {
+				return fmt.Errorf("component %q: invalid sha256 %q", name, c.SHA256)
+			}
+		}
 	}
 
 	for name, gc := range m.GitComponents {

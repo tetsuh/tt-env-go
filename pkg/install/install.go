@@ -44,6 +44,10 @@ type Orchestrator struct {
 	OSReleasePath string
 	// Logf logs informational progress. When nil, slog.Info is used.
 	Logf func(format string, args ...any)
+	// LookSystemCommand resolves a command name to an absolute system path when
+	// creating bin links. When nil, the preferred system directories are
+	// searched. It exists primarily to make bin-link creation testable.
+	LookSystemCommand func(command string) (string, bool)
 }
 
 func (o *Orchestrator) logf(format string, args ...any) {
@@ -65,6 +69,12 @@ type plan struct {
 	pipPackages    map[string]string
 	gitComponents  map[string]gitclone.Component
 	containerRefs  map[string]string // component -> image reference
+	// components is the full set of stack components, keyed by name, used by the
+	// download path when USE_SYSTEM_PACKAGES=false.
+	components map[string]manifest.Component
+	// managedCommandNames is the set of command names already provided by git or
+	// container component wrappers; they are excluded from system bin links.
+	managedCommandNames map[string]bool
 }
 
 // Install installs the named release. When dryRun is true it resolves and logs
@@ -181,6 +191,24 @@ func (o *Orchestrator) buildPlan(m *manifest.Manifest) (*plan, error) {
 		p.containerRefs[name] = ref
 	}
 
+	p.components = m.Components
+	p.managedCommandNames = make(map[string]bool, len(p.gitComponents)+len(p.containerRefs))
+	for name := range p.gitComponents {
+		p.managedCommandNames[name] = true
+	}
+	for name := range p.containerRefs {
+		p.managedCommandNames[name] = true
+	}
+
+	// When system packages are disabled the install relies entirely on the
+	// download path, so validate the component download metadata up front; this
+	// lets the dry-run surface problems a real install would hit.
+	if !p.useSystem {
+		if err := validateDownloadComponents(p.components); err != nil {
+			return nil, err
+		}
+	}
+
 	return p, nil
 }
 
@@ -193,8 +221,13 @@ func (o *Orchestrator) stage(ctx context.Context, stagingDir string, p *plan) er
 		if err := (&venv.Provisioner{Runner: o.Runner}).Provision(ctx, stagingDir, p.pipPackages); err != nil {
 			return fmt.Errorf("install: provision virtualenv: %w", err)
 		}
+		if err := o.createSystemBinLinks(stagingDir, p); err != nil {
+			return err
+		}
 	} else {
-		return fmt.Errorf("install: USE_SYSTEM_PACKAGES=false download path is not yet implemented (tracked in #58)")
+		if err := o.downloadComponents(ctx, stagingDir, p.components); err != nil {
+			return err
+		}
 	}
 
 	if err := o.installGitComponents(ctx, stagingDir, p); err != nil {
@@ -339,8 +372,11 @@ func (o *Orchestrator) logDryRun(release string, p *plan) {
 		for name, ver := range p.pipPackages {
 			o.logf("[dry-run] Would install pip package %s==%s", name, ver)
 		}
+		o.logf("[dry-run] Would create system/venv bin links for installed commands")
 	} else {
-		o.logf("[dry-run] Would download components (USE_SYSTEM_PACKAGES=false)")
+		for name := range p.components {
+			o.logf("[dry-run] Would download component %s and verify its checksum", name)
+		}
 	}
 	for name := range p.gitComponents {
 		o.logf("[dry-run] Would clone git component %s and create its wrapper", name)

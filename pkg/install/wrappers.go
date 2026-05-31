@@ -10,12 +10,13 @@ import (
 	"text/template"
 )
 
-//go:embed templates/git_wrapper.sh.tmpl templates/container_wrapper.sh.tmpl
+//go:embed templates/git_wrapper.sh.tmpl templates/container_wrapper.sh.tmpl templates/python_wrapper.sh.tmpl
 var templatesFS embed.FS
 
 var (
 	gitWrapperTemplate       = template.Must(template.ParseFS(templatesFS, "templates/git_wrapper.sh.tmpl"))
 	containerWrapperTemplate = template.Must(template.ParseFS(templatesFS, "templates/container_wrapper.sh.tmpl"))
+	pythonWrapperTemplate    = template.Must(template.ParseFS(templatesFS, "templates/python_wrapper.sh.tmpl"))
 )
 
 // defaultEntrypoint is the git component entrypoint used when a manifest does
@@ -108,6 +109,51 @@ func writeWrapper(binDir, component string, content []byte) error {
 		return fmt.Errorf("install: write wrapper %s: %w", path, err)
 	}
 	return nil
+}
+
+// pythonWrapperData holds the substitutions for the python command wrapper.
+// Exactly one of VenvCommandName or TargetCommand is set: VenvCommandName for a
+// venv-provided command, TargetCommand (an absolute, shell-quoted path) for a
+// system command shimmed through the venv python.
+type pythonWrapperData struct {
+	VenvSubdir      string
+	VenvCommandName string
+	TargetCommand   string
+}
+
+// shellSingleQuote wraps s in single quotes, escaping any embedded single
+// quotes, so it is safe to embed verbatim in a shell script.
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// renderVenvPythonWrapper renders a python wrapper that targets a command
+// provided by the release virtualenv.
+func renderVenvPythonWrapper(command, venvSubdir string) ([]byte, error) {
+	if err := validateComponentName(command); err != nil {
+		return nil, err
+	}
+	return renderPythonWrapper(pythonWrapperData{
+		VenvSubdir:      venvSubdir,
+		VenvCommandName: shellSingleQuote(command),
+	})
+}
+
+// renderAbsolutePythonWrapper renders a python wrapper that targets an absolute
+// system command path through the release virtualenv.
+func renderAbsolutePythonWrapper(targetPath, venvSubdir string) ([]byte, error) {
+	return renderPythonWrapper(pythonWrapperData{
+		VenvSubdir:    venvSubdir,
+		TargetCommand: shellSingleQuote(targetPath),
+	})
+}
+
+func renderPythonWrapper(data pythonWrapperData) ([]byte, error) {
+	var buf strings.Builder
+	if err := pythonWrapperTemplate.Execute(&buf, data); err != nil {
+		return nil, fmt.Errorf("install: render python wrapper: %w", err)
+	}
+	return []byte(buf.String()), nil
 }
 
 // containerImageRef builds the image reference from a URL and tag, using the

@@ -30,7 +30,8 @@ func Diff(left, right *Manifest) DiffResult {
 		LeftRelease:  left.Release,
 		RightRelease: right.Release,
 	}
-	appendStringSection(&res.Rows, "components", left.Components, right.Components)
+	appendStringSection(&res.Rows, "components",
+		componentVersionStrings(left.Components), componentVersionStrings(right.Components))
 	appendStringSection(&res.Rows, "system_packages", left.SystemPackages, right.SystemPackages)
 	appendStringSection(&res.Rows, "python_packages", left.PythonPackages, right.PythonPackages)
 	appendStringSection(&res.Rows, "git_components",
@@ -90,6 +91,20 @@ func sortedUnionKeys(left, right map[string]string) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// componentVersionStrings flattens components into their version strings keyed
+// by component name, preserving the prior diff output for string-form
+// components.
+func componentVersionStrings(comps map[string]Component) map[string]string {
+	if comps == nil {
+		return nil
+	}
+	out := make(map[string]string, len(comps))
+	for name, c := range comps {
+		out[name] = c.Version
+	}
+	return out
 }
 
 // gitComponentStrings flattens git components into a comparable "url@version"

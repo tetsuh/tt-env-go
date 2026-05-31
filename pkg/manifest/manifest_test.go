@@ -39,7 +39,7 @@ func TestLoadValidFixture(t *testing.T) {
 		}
 	}
 
-	if got := m.Components["tt-kmd"]; got != "ttkmd-2.8.0" {
+	if got := m.Components["tt-kmd"].Version; got != "ttkmd-2.8.0" {
 		t.Errorf("components[tt-kmd] = %q, want %q", got, "ttkmd-2.8.0")
 	}
 	if got := m.SystemPackages["metalium"]; got != "0.69.0~ubuntu24.04" {

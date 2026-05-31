@@ -9,7 +9,7 @@ import (
 func TestDiffComparesAllSections(t *testing.T) {
 	left := &Manifest{
 		Release:        "2026.04.01",
-		Components:     map[string]string{"tt-kmd": "1.0.0", "shared": "same"},
+		Components:     comps(map[string]string{"tt-kmd": "1.0.0", "shared": "same"}),
 		SystemPackages: map[string]string{"kmd": "1.0.0"},
 		PythonPackages: map[string]string{"tt-smi": "5.0.0"},
 		GitComponents: map[string]GitComponent{
@@ -21,7 +21,7 @@ func TestDiffComparesAllSections(t *testing.T) {
 	}
 	right := &Manifest{
 		Release:        "2026.05.16",
-		Components:     map[string]string{"tt-kmd": "2.0.0", "shared": "same", "tt-smi": "9.9"},
+		Components:     comps(map[string]string{"tt-kmd": "2.0.0", "shared": "same", "tt-smi": "9.9"}),
 		SystemPackages: map[string]string{"kmd": "2.0.0"},
 		PythonPackages: map[string]string{"tt-smi": "5.0.0"},
 		GitComponents: map[string]GitComponent{
@@ -66,8 +66,8 @@ func TestDiffComparesAllSections(t *testing.T) {
 }
 
 func TestDiffRowsSortedWithinSection(t *testing.T) {
-	left := &Manifest{Release: "a", Components: map[string]string{"zeta": "1", "alpha": "1"}}
-	right := &Manifest{Release: "b", Components: map[string]string{"mid": "1"}}
+	left := &Manifest{Release: "a", Components: comps(map[string]string{"zeta": "1", "alpha": "1"})}
+	right := &Manifest{Release: "b", Components: comps(map[string]string{"mid": "1"})}
 
 	d := Diff(left, right)
 	var order []string
@@ -114,8 +114,8 @@ func TestFormatGitComponentWithoutURL(t *testing.T) {
 }
 
 func TestDiffEmptyValueRendersDash(t *testing.T) {
-	left := &Manifest{Release: "a", Components: map[string]string{"x": ""}}
-	right := &Manifest{Release: "b", Components: map[string]string{"x": "1"}}
+	left := &Manifest{Release: "a", Components: comps(map[string]string{"x": ""})}
+	right := &Manifest{Release: "b", Components: comps(map[string]string{"x": "1"})}
 
 	d := Diff(left, right)
 	if len(d.Rows) != 1 {
@@ -124,4 +124,13 @@ func TestDiffEmptyValueRendersDash(t *testing.T) {
 	if d.Rows[0].Left != "-" || d.Rows[0].Right != "1" {
 		t.Errorf("row = %q/%q, want -/1", d.Rows[0].Left, d.Rows[0].Right)
 	}
+}
+
+// comps converts a name->version map into the Component map used by Manifest.
+func comps(m map[string]string) map[string]Component {
+	out := make(map[string]Component, len(m))
+	for name, version := range m {
+		out[name] = Component{Version: version}
+	}
+	return out
 }
