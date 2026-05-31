@@ -38,8 +38,8 @@ go.work.sum
 /tt-env
 
 # tt-env runtime artifacts
-shims/
-versions/
+/shims/
+/versions/
 
 # Agent
 .gemini/
