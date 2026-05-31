@@ -14,20 +14,22 @@ import (
 // It returns an empty result, without error, when nothing is installed or the
 // versions directory does not exist.
 func (i *Installer) List() ([]string, error) {
-	entries, err := os.ReadDir(i.VersionsDir())
+	dir, err := os.Open(i.VersionsDir())
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
 		}
+		return nil, fmt.Errorf("version: open versions dir: %w", err)
+	}
+	defer dir.Close()
+
+	names, err := dir.Readdirnames(-1)
+	if err != nil {
 		return nil, fmt.Errorf("version: read versions dir: %w", err)
 	}
 
 	var releases []string
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
+	for _, name := range names {
 		if strings.HasPrefix(name, ".") {
 			continue
 		}
