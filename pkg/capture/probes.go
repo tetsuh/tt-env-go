@@ -2,7 +2,9 @@ package capture
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os/exec"
 	"regexp"
 	"strings"
 )
@@ -14,17 +16,31 @@ var pipVersionRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.!+-]*$`)
 // gitHeadRe matches a full 40-character git object name.
 var gitHeadRe = regexp.MustCompile(`^[A-Fa-f0-9]{40}$`)
 
+// exitCode reports the process exit code when err is an *exec.ExitError (the
+// command ran and exited non-zero). The second return is false when the command
+// could not be run at all (binary missing, context cancellation, etc.), which
+// must be surfaced rather than interpreted as "not installed".
+func exitCode(err error) (int, bool) {
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return ee.ExitCode(), true
+	}
+	return 0, false
+}
+
 // defaultDpkgVersion returns the installed version of a dpkg package via
 // `dpkg-query`. The package status abbreviation is checked so that a package
 // left in a residual-config ("rc") or otherwise not-installed state yields
-// ("", false, nil), letting the caller apply its pinned/optional policy. An
-// error running dpkg-query (including the non-zero exit dpkg-query uses for
-// unknown packages) is likewise treated as not installed.
+// ("", false, nil). dpkg-query exits with code 1 when the package is unknown,
+// which is reported as not installed; any other failure (other exit codes,
+// missing binary, context cancellation) is returned as an error.
 func (c *Capturer) defaultDpkgVersion(ctx context.Context, name string) (string, bool, error) {
 	out, err := c.runner().Run(ctx, "dpkg-query", "-W", "-f=${db:Status-Abbrev} ${Version}", "--", name)
 	if err != nil {
-		// dpkg-query exits non-zero when the package is not installed.
-		return "", false, nil
+		if code, ok := exitCode(err); ok && code == 1 {
+			return "", false, nil // package not found
+		}
+		return "", false, fmt.Errorf("capture: dpkg-query %q: %w", name, err)
 	}
 	fields := strings.Fields(strings.TrimSpace(string(out)))
 	if len(fields) < 2 {
@@ -40,12 +56,16 @@ func (c *Capturer) defaultDpkgVersion(ctx context.Context, name string) (string,
 }
 
 // defaultPipShowVersion returns the installed version of a pip package within
-// the given virtualenv python, parsing `pip show` output. A package that is not
-// installed yields ("", false, nil).
+// the given virtualenv python, parsing `pip show` output. `pip show` exits with
+// code 1 when the package is absent, which yields ("", false, nil); any other
+// failure to run pip is returned as an error.
 func (c *Capturer) defaultPipShowVersion(ctx context.Context, venvPython, pkg string) (string, bool, error) {
 	out, err := c.runner().Run(ctx, venvPython, "-m", "pip", "show", "--", pkg)
 	if err != nil {
-		return "", false, nil
+		if code, ok := exitCode(err); ok && code == 1 {
+			return "", false, nil // package not found
+		}
+		return "", false, fmt.Errorf("capture: pip show %q: %w", pkg, err)
 	}
 	for _, line := range strings.Split(string(out), "\n") {
 		rest, ok := strings.CutPrefix(line, "Version:")
