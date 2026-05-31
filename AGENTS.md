@@ -68,8 +68,8 @@ session.
 
 ## AI review workflow
 
-- Check Gemini and GitHub Copilot review feedback after opening or updating PRs
-  when AI review is expected.
+- Check Gemini, GitHub Copilot, and CodeRabbit review feedback after opening or
+  updating PRs when AI review is expected.
 - Poll every 1 minute for up to 8 minutes after initial PR creation.
 - After pushing fixes, explicitly request rereview before polling again; pushing
   alone does not trigger AI rereview.
@@ -91,6 +91,28 @@ session.
   poll for the response.
 - Resolve review threads only after the AI reviewer indicates the issue is
   OK/resolved.
+
+### CodeRabbit
+
+- Treat the CodeRabbit author as `coderabbitai[bot]`.
+- CodeRabbit reviews PRs automatically; pushing new commits triggers an
+  incremental review on its own. Do not post `@coderabbitai review` to request a
+  rereview.
+- After a push, allow roughly 150 seconds before polling, and poll again if the
+  review is still in progress.
+- Read all three surfaces: the walkthrough/issue comments, submitted reviews
+  (the summary line reads `Actionable comments posted: N`, or a clean review has
+  no actionable comments), and inline PR review comments.
+- For each actionable inline comment, verify it against the current code, then
+  fix still-valid issues and skip stale ones (for example a comment on a file
+  the PR deletes) with a brief reason.
+- Reply to the specific inline thread explaining the fix and referencing the
+  commit, using:
+  - `gh api repos/<owner>/<repo>/pulls/<pr>/comments/<comment_id>/replies -f body='<reply>'`
+- CodeRabbit acknowledges a satisfied thread with a reply containing the marker
+  `<review_comment_addressed>`.
+- Resolve the thread with the GraphQL `resolveReviewThread` mutation only after
+  that acknowledgement appears.
 
 ## Merge method and squash commit message
 
