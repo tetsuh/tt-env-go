@@ -236,3 +236,52 @@ func TestVenvPathHelpers(t *testing.T) {
 		t.Errorf("VenvDir(\"\"): expected error")
 	}
 }
+
+func TestProvisionLatestFresh(t *testing.T) {
+	dir := t.TempDir()
+	runner := &packagemanager.MockRunner{Strict: true, Responses: []packagemanager.CommandResponse{{}, {}}}
+	p := &Provisioner{Runner: runner}
+
+	if err := p.ProvisionLatest(context.Background(), dir, []string{"tt-smi", "textual"}); err != nil {
+		t.Fatalf("ProvisionLatest: %v", err)
+	}
+
+	venv := filepath.Join(dir, "venv")
+	venvPython := filepath.Join(venv, "bin", "python")
+	wantCommands(t, runner, []string{
+		"python3 -m venv " + venv,
+		venvPython + " -m pip install --disable-pip-version-check textual tt-smi",
+	})
+}
+
+func TestProvisionLatestSortsAndNoPackages(t *testing.T) {
+	dir := t.TempDir()
+	runner := &packagemanager.MockRunner{Strict: true, Responses: []packagemanager.CommandResponse{{}, {}}}
+	p := &Provisioner{Runner: runner}
+
+	if err := p.ProvisionLatest(context.Background(), dir, []string{"zlib", "alpha"}); err != nil {
+		t.Fatalf("ProvisionLatest: %v", err)
+	}
+	venvPython := filepath.Join(dir, "venv", "bin", "python")
+	wantCommands(t, runner, []string{
+		"python3 -m venv " + filepath.Join(dir, "venv"),
+		venvPython + " -m pip install --disable-pip-version-check alpha zlib",
+	})
+
+	emptyRunner := &packagemanager.MockRunner{Strict: true}
+	pe := &Provisioner{Runner: emptyRunner}
+	if err := pe.ProvisionLatest(context.Background(), t.TempDir(), nil); err != nil {
+		t.Fatalf("ProvisionLatest(empty): %v", err)
+	}
+	wantCommands(t, emptyRunner, nil)
+}
+
+func TestProvisionLatestRejectsBadName(t *testing.T) {
+	runner := &packagemanager.MockRunner{Strict: true}
+	p := &Provisioner{Runner: runner}
+
+	if err := p.ProvisionLatest(context.Background(), t.TempDir(), []string{"--evil"}); err == nil {
+		t.Fatalf("ProvisionLatest: expected error for invalid name")
+	}
+	wantCommands(t, runner, nil)
+}

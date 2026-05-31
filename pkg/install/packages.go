@@ -12,7 +12,7 @@ import (
 // manifest. It mirrors proto1's _package_manager_resolved_packages: optional
 // packages are skipped when unresolved or unpinned, pinned packages require a
 // version, and the remaining packages may be installed unpinned.
-func resolveSystemPackages(osm *manifest.OSManifest, m *manifest.Manifest) ([]packagemanager.Package, error) {
+func resolveSystemPackages(osm *manifest.OSManifest, m *manifest.Manifest, latest bool) ([]packagemanager.Package, error) {
 	var pkgs []packagemanager.Package
 	for _, virtual := range systemVirtualPackages {
 		concrete, ok := osm.ResolvePackage(virtual)
@@ -21,6 +21,14 @@ func resolveSystemPackages(osm *manifest.OSManifest, m *manifest.Manifest) ([]pa
 				continue
 			}
 			return nil, fmt.Errorf("install: failed to resolve system package from OS manifest: %q", virtual)
+		}
+
+		// In --latest mode versions are intentionally unpinned so apt/dnf
+		// installs the candidate (latest) version; the exact installed version
+		// is recorded afterwards by capturing the environment.
+		if latest {
+			pkgs = append(pkgs, packagemanager.Package{Name: concrete})
+			continue
 		}
 
 		version := m.SystemPackages[virtual]
@@ -45,10 +53,15 @@ func resolveSystemPackages(osm *manifest.OSManifest, m *manifest.Manifest) ([]pa
 
 // resolvePipPackages maps the ordered pip packages to their pinned versions from
 // the stack manifest. Every pip package must be pinned, mirroring proto1's
-// _package_manager_resolved_pip_packages.
-func resolvePipPackages(m *manifest.Manifest) (map[string]string, error) {
+// _package_manager_resolved_pip_packages. In latest mode the versions are left
+// empty so the venv provisioner installs them unpinned.
+func resolvePipPackages(m *manifest.Manifest, latest bool) (map[string]string, error) {
 	out := make(map[string]string, len(pipPackages))
 	for _, name := range pipPackages {
+		if latest {
+			out[name] = ""
+			continue
+		}
 		version := m.PythonPackages[name]
 		if version == "" {
 			return nil, fmt.Errorf("install: stack manifest missing python package version: python_packages.%s", name)

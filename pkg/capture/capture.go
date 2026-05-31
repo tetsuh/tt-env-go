@@ -60,9 +60,16 @@ type Capturer struct {
 
 // Options modifies a capture.
 type Options struct {
-	// Base is the release whose installed tree and manifest seed the capture.
-	// When empty, the latest installed dated release is used.
+	// Base is the release whose manifest structure (system/pip package lists,
+	// git and container components) seeds the capture. When empty, the latest
+	// installed dated release is used.
 	Base string
+	// ProbeRelease is the installed release tree whose versions are probed
+	// (virtualenv pip versions and git clone HEADs). When empty, the base
+	// release tree is probed. It lets "install --latest --base B R" stage the
+	// latest versions into versions/R and then "capture R --base B --from R"
+	// record them without requiring B itself to be installed.
+	ProbeRelease string
 	// DryRun renders the manifest without writing it.
 	DryRun bool
 	// Force overwrites an existing target manifest.
@@ -71,10 +78,11 @@ type Options struct {
 
 // Result reports the outcome of a capture.
 type Result struct {
-	Release     string
-	BaseRelease string
-	Path        string
-	Written     bool
+	Release      string
+	BaseRelease  string
+	ProbeRelease string
+	Path         string
+	Written      bool
 	// ManifestJSON is the rendered manifest, always populated.
 	ManifestJSON []byte
 }
@@ -130,7 +138,7 @@ func (c *Capturer) Capture(ctx context.Context, release string, opts Options) (R
 		}
 	}
 
-	baseRelease, baseManifest, err := c.resolveBase(release, opts.Base, inst)
+	baseRelease, probeRelease, baseManifest, err := c.resolveBase(release, opts.Base, opts.ProbeRelease, inst)
 	if err != nil {
 		return Result{}, err
 	}
@@ -144,11 +152,11 @@ func (c *Capturer) Capture(ctx context.Context, release string, opts Options) (R
 	if err != nil {
 		return Result{}, err
 	}
-	pythonPackages, err := c.capturePythonPackages(ctx, inst, baseRelease)
+	pythonPackages, err := c.capturePythonPackages(ctx, inst, probeRelease)
 	if err != nil {
 		return Result{}, err
 	}
-	gitComponents, err := c.captureGitComponents(ctx, inst, baseRelease, baseManifest)
+	gitComponents, err := c.captureGitComponents(ctx, inst, probeRelease, baseManifest)
 	if err != nil {
 		return Result{}, err
 	}
@@ -180,7 +188,7 @@ func (c *Capturer) Capture(ctx context.Context, release string, opts Options) (R
 	}
 	rendered = append(rendered, '\n')
 
-	result := Result{Release: release, BaseRelease: baseRelease, Path: target, ManifestJSON: rendered}
+	result := Result{Release: release, BaseRelease: baseRelease, ProbeRelease: probeRelease, Path: target, ManifestJSON: rendered}
 	if opts.DryRun {
 		return result, nil
 	}
@@ -193,29 +201,40 @@ func (c *Capturer) Capture(ctx context.Context, release string, opts Options) (R
 	return result, nil
 }
 
-// resolveBase determines the base release and loads its manifest. The base must
-// be installed so its virtualenv and git clones can be probed.
-func (c *Capturer) resolveBase(release, requested string, inst *version.Installer) (string, *manifest.Manifest, error) {
+// resolveBase determines the base release (whose manifest structure seeds the
+// capture) and the probe release (whose installed tree is read), and loads the
+// base manifest. The probe release must be installed so its virtualenv and git
+// clones can be read. When probeRelease is empty it defaults to the base, in
+// which case the base must itself be installed; when it is given explicitly the
+// base manifest only needs to load (it need not be installed).
+func (c *Capturer) resolveBase(release, requested, requestedProbe string, inst *version.Installer) (string, string, *manifest.Manifest, error) {
 	base := requested
 	if base == "" {
 		latest, err := c.latestInstalledBase(release, inst)
 		if err != nil {
-			return "", nil, err
+			return "", "", nil, err
 		}
 		base = latest
 	} else if err := version.ValidateRelease(base); err != nil {
-		return "", nil, err
+		return "", "", nil, err
 	}
 
-	if !inst.IsInstalled(base) {
-		return "", nil, fmt.Errorf("capture: base release %s is not installed at %s; capture reads installed versions", base, inst.ReleaseDir(base))
+	probe := requestedProbe
+	if probe == "" {
+		probe = base
+	} else if err := version.ValidateRelease(probe); err != nil {
+		return "", "", nil, err
+	}
+
+	if !inst.IsInstalled(probe) {
+		return "", "", nil, fmt.Errorf("capture: probe release %s is not installed at %s; capture reads installed versions", probe, inst.ReleaseDir(probe))
 	}
 
 	baseManifest, err := manifest.Load(filepath.Join(c.Root, "releases", base+".json"))
 	if err != nil {
-		return "", nil, fmt.Errorf("capture: load base manifest: %w", err)
+		return "", "", nil, fmt.Errorf("capture: load base manifest: %w", err)
 	}
-	return base, baseManifest, nil
+	return base, probe, baseManifest, nil
 }
 
 // latestInstalledBase returns the lexicographically latest dated release that is
@@ -312,10 +331,10 @@ func (c *Capturer) captureSystemPackages(ctx context.Context, osm *manifest.OSMa
 
 // capturePythonPackages probes the installed version of each pip package within
 // the base release virtualenv. Every pip package must be installed.
-func (c *Capturer) capturePythonPackages(ctx context.Context, inst *version.Installer, baseRelease string) (map[string]string, error) {
-	venvPython := filepath.Join(inst.ReleaseDir(baseRelease), "venv", "bin", "python")
+func (c *Capturer) capturePythonPackages(ctx context.Context, inst *version.Installer, probeRelease string) (map[string]string, error) {
+	venvPython := filepath.Join(inst.ReleaseDir(probeRelease), "venv", "bin", "python")
 	if _, err := os.Stat(venvPython); err != nil {
-		return nil, fmt.Errorf("capture: base release %s has no virtualenv python at %s: %w", baseRelease, venvPython, err)
+		return nil, fmt.Errorf("capture: probe release %s has no virtualenv python at %s: %w", probeRelease, venvPython, err)
 	}
 	out := make(map[string]string, len(stackpolicy.PipPackages))
 	for _, pkg := range stackpolicy.PipPackages {
@@ -333,12 +352,12 @@ func (c *Capturer) capturePythonPackages(ctx context.Context, inst *version.Inst
 
 // captureGitComponents records each base git component's URL and the local HEAD
 // of its installed clone.
-func (c *Capturer) captureGitComponents(ctx context.Context, inst *version.Installer, baseRelease string, base *manifest.Manifest) (map[string]manifest.GitComponent, error) {
+func (c *Capturer) captureGitComponents(ctx context.Context, inst *version.Installer, probeRelease string, base *manifest.Manifest) (map[string]manifest.GitComponent, error) {
 	out := make(map[string]manifest.GitComponent, len(base.GitComponents))
 	if len(base.GitComponents) == 0 {
 		return out, nil
 	}
-	srcRoot := filepath.Join(inst.ReleaseDir(baseRelease), "src")
+	srcRoot := filepath.Join(inst.ReleaseDir(probeRelease), "src")
 	names := make([]string, 0, len(base.GitComponents))
 	for name := range base.GitComponents {
 		names = append(names, name)

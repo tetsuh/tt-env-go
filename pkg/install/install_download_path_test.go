@@ -46,7 +46,7 @@ func TestInstallDownloadPathDryRunValidates(t *testing.T) {
 	mustWrite(t, osRelease, testOSRelease)
 
 	orch := &Orchestrator{Root: root, OSReleasePath: osRelease, Logf: func(string, ...any) {}}
-	if _, err := orch.Install(context.Background(), testRelease, true, false); err == nil {
+	if _, err := orch.Install(context.Background(), testRelease, Options{DryRun: true}); err == nil {
 		t.Fatal("expected dry-run to reject a component missing sha256")
 	}
 }
@@ -89,7 +89,7 @@ func TestInstallDownloadPath(t *testing.T) {
 	}
 
 	orch := &Orchestrator{Root: root, Runner: runner, OSReleasePath: osRelease, Logf: func(string, ...any) {}}
-	res, err := orch.Install(context.Background(), testRelease, false, false)
+	res, err := orch.Install(context.Background(), testRelease, Options{})
 	if err != nil {
 		t.Fatalf("Install download path: %v", err)
 	}

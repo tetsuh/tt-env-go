@@ -12,6 +12,7 @@ var (
 	captureDryRun bool
 	captureForce  bool
 	captureBase   string
+	captureFrom   string
 )
 
 // captureCmd represents the capture command
@@ -41,9 +42,10 @@ func runCapture(cmd *cobra.Command, args []string) error {
 	}
 
 	res, err := cap.Capture(ctx, release, capture.Options{
-		Base:   captureBase,
-		DryRun: captureDryRun,
-		Force:  captureForce,
+		Base:         captureBase,
+		ProbeRelease: captureFrom,
+		DryRun:       captureDryRun,
+		Force:        captureForce,
 	})
 	if err != nil {
 		return err
@@ -61,5 +63,6 @@ func init() {
 	captureCmd.Flags().BoolVar(&captureDryRun, "dry-run", false, "print the captured manifest without writing it")
 	captureCmd.Flags().BoolVar(&captureForce, "force", false, "overwrite an existing local manifest")
 	captureCmd.Flags().StringVar(&captureBase, "base", "", "use an existing release manifest as the capture template")
+	captureCmd.Flags().StringVar(&captureFrom, "from", "", "probe this installed release tree instead of the base (e.g. one staged by 'install --latest')")
 	RootCmd.AddCommand(captureCmd)
 }
