@@ -103,6 +103,17 @@ func TestDetectOSMissingFile(t *testing.T) {
 	}
 }
 
+func TestDetectOSEmptyPathDefaults(t *testing.T) {
+	if _, err := os.Stat("/etc/os-release"); err != nil {
+		t.Skip("/etc/os-release not present")
+	}
+	// An empty path must fall back to /etc/os-release rather than failing to
+	// open the empty path.
+	if _, err := DetectOS(""); err != nil {
+		t.Fatalf("DetectOS(\"\") should default to /etc/os-release: %v", err)
+	}
+}
+
 func TestDetectOSOverride(t *testing.T) {
 	t.Setenv("TT_OVERRIDE_OS_ID", "ubuntu")
 	t.Setenv("TT_OVERRIDE_OS_VERSION", "22.04")

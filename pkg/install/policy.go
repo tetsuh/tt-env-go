@@ -1,48 +1,19 @@
 package install
 
-// The Tenstorrent stack policy below mirrors the constants kept in proto1's
-// lib/package_manager.sh. The ordered virtual-package list, the pinned and
-// optional subsets, and the pip-package list are domain knowledge tied to the
-// stack, so they live with the orchestrator rather than the generic
-// package-manager engine.
+import "github.com/tetsuh/tt-env-go/pkg/stackpolicy"
 
-// systemVirtualPackages is the ordered list of virtual system packages that the
-// installer resolves against the OS manifest.
-var systemVirtualPackages = []string{
-	"cmake",
-	"ninja",
-	"zlib",
-	"kmd",
-	"smi",
-	"flash",
-	"topology",
-	"metalium",
-}
+// The Tenstorrent stack package policy is defined in pkg/stackpolicy and shared
+// with the capture engine. The aliases below keep the install code unchanged
+// while sourcing the ordered virtual-package list, the pinned and optional
+// subsets, and the pip-package list from the single shared definition.
 
-// pinnedVirtualPackages must carry a version pin from the stack manifest; a
-// missing pin is a hard error.
-var pinnedVirtualPackages = map[string]bool{
-	"kmd":      true,
-	"smi":      true,
-	"flash":    true,
-	"topology": true,
-}
+var systemVirtualPackages = stackpolicy.SystemVirtualPackages
 
-// optionalVirtualPackages are skipped when the OS manifest does not define them
-// or the stack manifest does not pin them.
-var optionalVirtualPackages = map[string]bool{
-	"metalium": true,
-}
+var pinnedVirtualPackages = stackpolicy.PinnedVirtualPackages
 
-// pipPackages is the ordered list of Python packages installed into the release
-// virtualenv. Each must be pinned in the stack manifest's python_packages.
-var pipPackages = []string{
-	"tt-smi",
-	"tt-umd",
-	"textual",
-	"elasticsearch",
-	"tt-burnin",
-}
+var optionalVirtualPackages = stackpolicy.OptionalVirtualPackages
+
+var pipPackages = stackpolicy.PipPackages
 
 // pipPackageCommands are the bin command names that are provided by pip
 // packages. When such a command is found as a system command and a release
