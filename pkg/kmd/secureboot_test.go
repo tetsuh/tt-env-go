@@ -130,6 +130,29 @@ func TestCheckNonEFISystemSkipsMokutil(t *testing.T) {
 	}
 }
 
+func TestCheckEFIDirStatErrorFailsClosed(t *testing.T) {
+	// A non-directory parent makes os.Stat on the child return a non-NotExist
+	// error (ENOTDIR), standing in for an unqueryable /sys/firmware/efi.
+	file := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	efiDir := filepath.Join(file, "efi")
+	runner := &packagemanager.MockRunner{Strict: true}
+	c := &SecureBootChecker{Runner: runner, EFIDir: efiDir}
+
+	res := c.Check(context.Background())
+	if res.State != SecureBootUnavailable {
+		t.Fatalf("State = %q, want unavailable", res.State)
+	}
+	if res.Safe() {
+		t.Errorf("Safe() = true, want false for unqueryable EFI dir")
+	}
+	if got := runner.CommandStrings(); len(got) != 0 {
+		t.Errorf("mokutil should not run when EFI dir is unqueryable, ran %v", got)
+	}
+}
+
 func TestCheckCustomMokutilPath(t *testing.T) {
 	runner := &packagemanager.MockRunner{Strict: true, Responses: []packagemanager.CommandResponse{
 		{Output: []byte("SecureBoot disabled")},

@@ -90,12 +90,21 @@ func (c *SecureBootChecker) efiDir() string {
 // returns an error: every outcome, including a missing mokutil or unparseable
 // output, is encoded in the result's State so callers can branch on it.
 func (c *SecureBootChecker) Check(ctx context.Context) SecureBootResult {
-	// Mirror proto1's `[[ ! -d "$efi_dir" ]]`: a missing path or anything that
-	// is not a directory means the host is not a UEFI system.
-	if info, err := os.Stat(c.efiDir()); err != nil || !info.IsDir() {
+	// Mirror proto1's `[[ ! -d "$efi_dir" ]]` for the common cases: a missing
+	// path or a non-directory means the host is not a UEFI system. Any other
+	// stat failure (for example a permission error) leaves the state
+	// unqueryable, so fail closed rather than assuming it is safe.
+	info, err := os.Stat(c.efiDir())
+	switch {
+	case os.IsNotExist(err) || (err == nil && !info.IsDir()):
 		return SecureBootResult{
 			State:  SecureBootNotApplicable,
 			Detail: "no UEFI firmware detected at " + c.efiDir(),
+		}
+	case err != nil:
+		return SecureBootResult{
+			State:  SecureBootUnavailable,
+			Detail: "cannot stat " + c.efiDir() + ": " + err.Error(),
 		}
 	}
 
