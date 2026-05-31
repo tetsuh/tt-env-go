@@ -73,7 +73,11 @@ func (i *Installer) Current() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("version: read current link: %w", err)
 	}
-	if filepath.Clean(filepath.Dir(target)) != filepath.Clean(i.VersionsDir()) {
+	versionsDir, err := filepath.Abs(i.VersionsDir())
+	if err != nil {
+		return "", fmt.Errorf("version: resolve versions dir: %w", err)
+	}
+	if filepath.Clean(filepath.Dir(target)) != filepath.Clean(versionsDir) {
 		return "", fmt.Errorf("version: current link points outside versions dir: %s", target)
 	}
 	release := filepath.Base(target)

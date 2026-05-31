@@ -159,6 +159,34 @@ func TestUseRefusesNonSymlinkCurrent(t *testing.T) {
 	}
 }
 
+func TestUseAndCurrentWithRelativeRoot(t *testing.T) {
+	// Use() writes an absolute symlink target; Current() must resolve
+	// VersionsDir to absolute so the comparison holds for a relative Root.
+	base := t.TempDir()
+	origWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(base); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(origWd) })
+
+	i := &Installer{Root: "tt-home"}
+	installForTest(t, i, "v1.0.0")
+
+	if err := i.Use("v1.0.0"); err != nil {
+		t.Fatalf("Use: %v", err)
+	}
+	cur, err := i.Current()
+	if err != nil {
+		t.Fatalf("Current: %v", err)
+	}
+	if cur != "v1.0.0" {
+		t.Errorf("Current = %q, want v1.0.0", cur)
+	}
+}
+
 func TestCurrentMissingLink(t *testing.T) {
 	i := newInstaller(t)
 	if _, err := i.Current(); err == nil {
