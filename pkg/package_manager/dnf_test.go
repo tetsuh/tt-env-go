@@ -139,6 +139,14 @@ func TestDnfManagerIsInstalled(t *testing.T) {
 			want: false,
 		},
 		{
+			name: "not installed via exit code (localized output)",
+			response: CommandResponse{
+				Output: []byte("paquet tt-smi n'est pas installé"),
+				Err:    exitErr(t, 1),
+			},
+			want: false,
+		},
+		{
 			name: "unexpected failure",
 			response: CommandResponse{
 				Output: []byte("rpm: command not found"),

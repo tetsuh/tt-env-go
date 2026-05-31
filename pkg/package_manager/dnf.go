@@ -107,9 +107,12 @@ func (m *DnfManager) IsInstalled(ctx context.Context, name string) (bool, error)
 	if err == nil {
 		return true, nil
 	}
-	// rpm -q exits non-zero and prints "package <name> is not installed" when
-	// the package is absent; treat that as not installed but surface any other
-	// failure (e.g. missing binary).
+	// rpm exits with status 1 when the package is not installed. Preferring the
+	// exit code keeps the check correct regardless of locale; the message match
+	// is only a fallback for runners that do not surface an exit code.
+	if isExitCode(err, 1) {
+		return false, nil
+	}
 	if strings.Contains(string(out), "is not installed") {
 		return false, nil
 	}
