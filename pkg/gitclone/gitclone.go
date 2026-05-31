@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"unicode"
@@ -23,6 +24,9 @@ import (
 
 // DefaultGit is the git executable used when Cloner does not override it.
 const DefaultGit = "git"
+
+// fullSHARe matches a full 40-character git object name.
+var fullSHARe = regexp.MustCompile(`^[0-9a-fA-F]{40}$`)
 
 // Component describes a git-sourced component to clone. Version may hold either
 // a tag or a commit SHA; it is resolved to a commit during verification.
@@ -51,6 +55,29 @@ func (c *Cloner) git() string {
 		return c.Git
 	}
 	return DefaultGit
+}
+
+// ResolveHead returns the commit SHA that the remote's HEAD currently points to,
+// using `git ls-remote --symref <url> HEAD`. It lets the install --latest path
+// pin a git component to the tip of the remote's default branch so the existing
+// clone-and-verify flow can check it out like any other pinned version.
+func (c *Cloner) ResolveHead(ctx context.Context, url string) (string, error) {
+	if err := validateToken("component url", url); err != nil {
+		return "", err
+	}
+	args := []string{"ls-remote", "--symref", "--", url, "HEAD"}
+	out, err := c.runner().Run(ctx, c.git(), args...)
+	if err != nil {
+		return "", commandError(c.git(), args, out, err)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		// A non-symref line is "<sha>\tHEAD"; skip the "ref: refs/... HEAD" line.
+		if len(fields) >= 2 && fields[len(fields)-1] == "HEAD" && fullSHARe.MatchString(fields[0]) {
+			return strings.ToLower(fields[0]), nil
+		}
+	}
+	return "", fmt.Errorf("gitclone: could not determine remote HEAD for %q", url)
 }
 
 // Provision clones every component under srcDir and checks each out at its

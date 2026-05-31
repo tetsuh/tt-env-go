@@ -97,13 +97,30 @@ func (p *Provisioner) VenvPython(targetDir string) (string, error) {
 // pinned versions). It returns nil without running any command when packages is
 // empty.
 func (p *Provisioner) Provision(ctx context.Context, targetDir string, packages map[string]string) error {
-	if targetDir == "" {
-		return errors.New("venv: target directory must not be empty")
-	}
-
 	specs, err := resolvePackages(packages)
 	if err != nil {
 		return err
+	}
+	return p.provision(ctx, targetDir, specs)
+}
+
+// ProvisionLatest creates a virtualenv under targetDir (if one does not already
+// exist) and installs the named packages unpinned, letting pip resolve the
+// latest compatible versions. It backs `install --latest`, where the exact
+// versions are recorded afterwards by capturing the installed environment.
+func (p *Provisioner) ProvisionLatest(ctx context.Context, targetDir string, names []string) error {
+	specs, err := resolveLatestPackages(names)
+	if err != nil {
+		return err
+	}
+	return p.provision(ctx, targetDir, specs)
+}
+
+// provision creates the virtualenv (if needed) and installs the given pip
+// specifiers. It returns nil without running any command when specs is empty.
+func (p *Provisioner) provision(ctx context.Context, targetDir string, specs []string) error {
+	if targetDir == "" {
+		return errors.New("venv: target directory must not be empty")
 	}
 	if len(specs) == 0 {
 		return nil
@@ -174,6 +191,28 @@ func resolvePackages(packages map[string]string) ([]string, error) {
 			return nil, err
 		}
 		specs = append(specs, name+"=="+version)
+	}
+	return specs, nil
+}
+
+// resolveLatestPackages converts package names into a sorted slice of bare
+// "name" specifiers (no version pin), validating each name.
+func resolveLatestPackages(names []string) ([]string, error) {
+	if len(names) == 0 {
+		return nil, nil
+	}
+	sorted := append([]string(nil), names...)
+	sort.Strings(sorted)
+
+	specs := make([]string, 0, len(sorted))
+	for _, name := range sorted {
+		if err := validateToken("package name", name); err != nil {
+			return nil, err
+		}
+		if strings.Contains(name, "==") {
+			return nil, fmt.Errorf("venv: package name must not contain '==': %q", name)
+		}
+		specs = append(specs, name)
 	}
 	return specs, nil
 }

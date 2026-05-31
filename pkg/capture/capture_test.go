@@ -358,3 +358,96 @@ func TestCaptureRendersEmptySectionsAsObjects(t *testing.T) {
 		t.Errorf("empty container_components must render as an object:\n%s", res.ManifestJSON)
 	}
 }
+
+// TestCaptureFromDecouplesProbeTree verifies that --from probes a different
+// installed release tree than the --base manifest, and that the base manifest
+// need not be installed when an explicit probe release is given.
+func TestCaptureFromDecouplesProbeTree(t *testing.T) {
+	root, osRelease := setupRoot(t)
+	c := newCapturer(t, root, osRelease)
+
+	const probeRelease = "2026.06.02"
+	// Install only the probe tree (venv + git clones); it has no manifest.
+	probeDir := filepath.Join(root, "versions", probeRelease)
+	mustWrite(t, filepath.Join(probeDir, ".tt-env-installed"), `{}`)
+	mustWrite(t, filepath.Join(probeDir, "venv", "bin", "python"), "#!/bin/sh\n")
+	for name := range installedGitHeads {
+		mustWrite(t, filepath.Join(probeDir, "src", name, ".git", "HEAD"), "ref: refs/heads/main\n")
+	}
+
+	// Remove the base installed tree to prove the base need not be installed
+	// when --from supplies the probe tree.
+	if err := os.RemoveAll(filepath.Join(root, "versions", baseRelease)); err != nil {
+		t.Fatalf("remove base tree: %v", err)
+	}
+
+	res, err := c.Capture(context.Background(), "2026.06.05", Options{
+		Base:         baseRelease,
+		ProbeRelease: probeRelease,
+		DryRun:       true,
+	})
+	if err != nil {
+		t.Fatalf("Capture --from: %v", err)
+	}
+	if res.BaseRelease != baseRelease {
+		t.Errorf("base = %q, want %q", res.BaseRelease, baseRelease)
+	}
+	if res.ProbeRelease != probeRelease {
+		t.Errorf("probe = %q, want %q", res.ProbeRelease, probeRelease)
+	}
+
+	var m manifest.Manifest
+	if err := json.Unmarshal(res.ManifestJSON, &m); err != nil {
+		t.Fatalf("rendered manifest invalid: %v", err)
+	}
+	if m.PythonPackages["tt-smi"] != "5.2.0" {
+		t.Errorf("python_packages.tt-smi = %q, want 5.2.0", m.PythonPackages["tt-smi"])
+	}
+	if m.GitComponents["tt-studio"].Version != installedGitHeads["tt-studio"] {
+		t.Errorf("git tt-studio version = %q", m.GitComponents["tt-studio"].Version)
+	}
+}
+
+// TestCaptureFromRequiresInstalledProbe verifies that an explicit --from release
+// must itself be installed, even when the base manifest exists.
+func TestCaptureFromRequiresInstalledProbe(t *testing.T) {
+	root, osRelease := setupRoot(t)
+	c := newCapturer(t, root, osRelease)
+
+	if _, err := c.Capture(context.Background(), "2026.06.05", Options{
+		Base:         baseRelease,
+		ProbeRelease: "2099.01.01",
+		DryRun:       true,
+	}); err == nil {
+		t.Fatal("expected error for an uninstalled probe release")
+	}
+}
+
+func TestCaptureFromDescriptionNotesProbeProvenance(t *testing.T) {
+	root, osRelease := setupRoot(t)
+	c := newCapturer(t, root, osRelease)
+
+	const probeRelease = "2026.06.02"
+	probeDir := filepath.Join(root, "versions", probeRelease)
+	mustWrite(t, filepath.Join(probeDir, ".tt-env-installed"), `{}`)
+	mustWrite(t, filepath.Join(probeDir, "venv", "bin", "python"), "#!/bin/sh\n")
+	for name := range installedGitHeads {
+		mustWrite(t, filepath.Join(probeDir, "src", name, ".git", "HEAD"), "ref: refs/heads/main\n")
+	}
+
+	res, err := c.Capture(context.Background(), "2026.06.05", Options{
+		Base:         baseRelease,
+		ProbeRelease: probeRelease,
+		DryRun:       true,
+	})
+	if err != nil {
+		t.Fatalf("Capture --from: %v", err)
+	}
+	var m manifest.Manifest
+	if err := json.Unmarshal(res.ManifestJSON, &m); err != nil {
+		t.Fatalf("rendered manifest invalid: %v", err)
+	}
+	if !strings.Contains(m.Description, probeRelease) || !strings.Contains(m.Description, baseRelease) {
+		t.Errorf("description should mention base %q and probe %q, got %q", baseRelease, probeRelease, m.Description)
+	}
+}

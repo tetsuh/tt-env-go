@@ -104,7 +104,7 @@ func TestInstallSystemPackagePath(t *testing.T) {
 	runner := cloneAwareRunner()
 	orch := &Orchestrator{Root: root, Runner: runner, OSReleasePath: osRelease, Logf: func(string, ...any) {}}
 
-	res, err := orch.Install(context.Background(), testRelease, false, false)
+	res, err := orch.Install(context.Background(), testRelease, Options{})
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestInstallDryRunDoesNotStage(t *testing.T) {
 	runner := cloneAwareRunner()
 	orch := &Orchestrator{Root: root, Runner: runner, OSReleasePath: osRelease, Logf: func(string, ...any) {}}
 
-	res, err := orch.Install(context.Background(), testRelease, true, false)
+	res, err := orch.Install(context.Background(), testRelease, Options{DryRun: true})
 	if err != nil {
 		t.Fatalf("Install dry-run: %v", err)
 	}
@@ -174,7 +174,7 @@ func TestInstallDryRunDoesNotStage(t *testing.T) {
 func TestInstallAlreadyInstalledIsNoOp(t *testing.T) {
 	root, osRelease := setupRoot(t)
 	orch := &Orchestrator{Root: root, Runner: cloneAwareRunner(), OSReleasePath: osRelease, Logf: func(string, ...any) {}}
-	if _, err := orch.Install(context.Background(), testRelease, false, false); err != nil {
+	if _, err := orch.Install(context.Background(), testRelease, Options{}); err != nil {
 		t.Fatalf("first install: %v", err)
 	}
 
@@ -182,7 +182,7 @@ func TestInstallAlreadyInstalledIsNoOp(t *testing.T) {
 	// commands run, but shims are still regenerated.
 	runner := cloneAwareRunner()
 	orch.Runner = runner
-	res, err := orch.Install(context.Background(), testRelease, false, false)
+	res, err := orch.Install(context.Background(), testRelease, Options{})
 	if err != nil {
 		t.Fatalf("second install: %v", err)
 	}
@@ -197,13 +197,13 @@ func TestInstallAlreadyInstalledIsNoOp(t *testing.T) {
 func TestInstallForceReinstalls(t *testing.T) {
 	root, osRelease := setupRoot(t)
 	orch := &Orchestrator{Root: root, Runner: cloneAwareRunner(), OSReleasePath: osRelease, Logf: func(string, ...any) {}}
-	if _, err := orch.Install(context.Background(), testRelease, false, false); err != nil {
+	if _, err := orch.Install(context.Background(), testRelease, Options{}); err != nil {
 		t.Fatalf("first install: %v", err)
 	}
 
 	runner := cloneAwareRunner()
 	orch.Runner = runner
-	res, err := orch.Install(context.Background(), testRelease, false, true)
+	res, err := orch.Install(context.Background(), testRelease, Options{Force: true})
 	if err != nil {
 		t.Fatalf("force install: %v", err)
 	}
@@ -220,14 +220,14 @@ func TestInstallRejectsMismatchedRelease(t *testing.T) {
 	mustWrite(t, filepath.Join(root, "releases", testRelease+".json"),
 		strings.Replace(testStackManifest, `"release": "2026.05.16"`, `"release": "9999.01.01"`, 1))
 	orch := &Orchestrator{Root: root, Logf: func(string, ...any) {}}
-	if _, err := orch.Install(context.Background(), testRelease, true, false); err == nil {
+	if _, err := orch.Install(context.Background(), testRelease, Options{DryRun: true}); err == nil {
 		t.Fatal("expected error for mismatched release name")
 	}
 }
 
 func TestInstallInvalidReleaseName(t *testing.T) {
 	orch := &Orchestrator{Root: t.TempDir()}
-	if _, err := orch.Install(context.Background(), "../escape", false, false); err == nil {
+	if _, err := orch.Install(context.Background(), "../escape", Options{}); err == nil {
 		t.Fatal("expected error for invalid release name")
 	}
 }
@@ -296,4 +296,186 @@ func containsArg(args []string, want string) bool {
 		}
 	}
 	return false
+}
+
+const latestHeadSHA = "fedcba9876543210fedcba9876543210fedcba98"
+
+// latestAwareRunner extends cloneAwareRunner to answer `git ls-remote --symref`
+// with a programmed HEAD SHA so the --latest path can resolve git components.
+func latestAwareRunner() *packagemanager.MockRunner {
+	r := &packagemanager.MockRunner{}
+	r.RunFunc = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if name == "git" && len(args) > 0 && args[0] == "ls-remote" {
+			return []byte("ref: refs/heads/main\tHEAD\n" + latestHeadSHA + "\tHEAD\n"), nil
+		}
+		if name == "git" && len(args) > 0 && args[0] == "clone" {
+			dest := args[len(args)-1]
+			_ = os.MkdirAll(dest, 0o755)
+			_ = os.WriteFile(filepath.Join(dest, "run.py"), []byte("#!/usr/bin/env python\n"), 0o755)
+		}
+		if name == "git" && containsArg(args, "rev-parse") {
+			return []byte(latestHeadSHA + "\n"), nil
+		}
+		return nil, nil
+	}
+	return r
+}
+
+func TestInstallLatestUnpinned(t *testing.T) {
+	root, osRelease := setupRoot(t)
+	runner := latestAwareRunner()
+	orch := &Orchestrator{Root: root, Runner: runner, OSReleasePath: osRelease, Logf: func(string, ...any) {}}
+
+	res, err := orch.Install(context.Background(), testRelease, Options{Latest: true})
+	if err != nil {
+		t.Fatalf("Install --latest: %v", err)
+	}
+	if !res.Installed {
+		t.Fatalf("expected Installed=true, got %+v", res)
+	}
+
+	// System packages are installed unpinned (no "=version" suffix).
+	specs := installSpecs(runner)
+	for _, s := range specs {
+		if strings.Contains(s, "=") {
+			t.Errorf("latest install must not pin system package, got %q", s)
+		}
+	}
+	for _, want := range []string{
+		"cmake", "ninja-build", "zlib1g-dev", "tenstorrent-dkms",
+		"tt-smi", "tt-flash", "tt-topology", "tt-metalium",
+	} {
+		if !contains(specs, want) {
+			t.Errorf("apt install missing unpinned spec %q (got %v)", want, specs)
+		}
+	}
+
+	// Pip packages are installed unpinned (no "==").
+	pip := pipInstallSpecs(runner)
+	if len(pip) == 0 {
+		t.Fatalf("expected pip install command")
+	}
+	for _, s := range pip {
+		if strings.Contains(s, "==") {
+			t.Errorf("latest install must not pin pip package, got %q", s)
+		}
+	}
+
+	// Git component is cloned at the resolved remote HEAD.
+	assertCommandSeen(t, runner, "git", "ls-remote", "--symref")
+	if !gitCheckoutSeen(runner, latestHeadSHA) {
+		t.Errorf("expected git checkout at resolved HEAD %s; commands: %v", latestHeadSHA, runner.Commands)
+	}
+}
+
+func TestInstallLatestRequiresForceWhenInstalled(t *testing.T) {
+	root, osRelease := setupRoot(t)
+	runner := latestAwareRunner()
+	orch := &Orchestrator{Root: root, Runner: runner, OSReleasePath: osRelease, Logf: func(string, ...any) {}}
+
+	if _, err := orch.Install(context.Background(), testRelease, Options{}); err != nil {
+		t.Fatalf("initial install: %v", err)
+	}
+	if _, err := orch.Install(context.Background(), testRelease, Options{Latest: true}); err == nil {
+		t.Fatalf("expected error refreshing installed release without --force")
+	}
+	res, err := orch.Install(context.Background(), testRelease, Options{Latest: true, Force: true})
+	if err != nil {
+		t.Fatalf("Install --latest --force: %v", err)
+	}
+	if !res.Installed {
+		t.Errorf("expected Installed=true on force refresh, got %+v", res)
+	}
+}
+
+func TestInstallLatestUsesBaseManifest(t *testing.T) {
+	root, osRelease := setupRoot(t)
+	// Target release has no manifest of its own; --base supplies the structure.
+	const target = "2026.06.01"
+	runner := latestAwareRunner()
+	orch := &Orchestrator{Root: root, Runner: runner, OSReleasePath: osRelease, Logf: func(string, ...any) {}}
+
+	res, err := orch.Install(context.Background(), target, Options{Latest: true, Base: testRelease})
+	if err != nil {
+		t.Fatalf("Install --latest --base: %v", err)
+	}
+	if !res.Installed {
+		t.Fatalf("expected Installed=true, got %+v", res)
+	}
+	if _, err := os.Stat(filepath.Join(root, "versions", target, ".tt-env-installed")); err != nil {
+		t.Errorf("expected target installed into versions/%s: %v", target, err)
+	}
+	// install --latest must not write a manifest for the target.
+	if _, err := os.Stat(filepath.Join(root, "releases", target+".json")); !os.IsNotExist(err) {
+		t.Errorf("install --latest must not write releases/%s.json", target)
+	}
+}
+
+// pipInstallSpecs returns the package specs from the recorded pip install call.
+func pipInstallSpecs(r *packagemanager.MockRunner) []string {
+	for _, c := range r.Commands {
+		if containsArg(c.Args, "pip") && containsArg(c.Args, "install") {
+			var specs []string
+			for _, a := range c.Args {
+				if a == "-m" || a == "pip" || a == "install" || a == "--disable-pip-version-check" {
+					continue
+				}
+				specs = append(specs, a)
+			}
+			return specs
+		}
+	}
+	return nil
+}
+
+func gitCheckoutSeen(r *packagemanager.MockRunner, sha string) bool {
+	for _, c := range r.Commands {
+		if c.Name != "git" {
+			continue
+		}
+		if containsArg(c.Args, "checkout") && containsArg(c.Args, sha) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestInstallLatestRejectsMismatchedBaseManifest(t *testing.T) {
+	root, osRelease := setupRoot(t)
+	// Base manifest declares a different release than its filename.
+	mustWrite(t, filepath.Join(root, "releases", "2026.07.01.json"),
+		strings.Replace(testStackManifest, `"release": "2026.05.16"`, `"release": "9999.01.01"`, 1))
+	orch := &Orchestrator{Root: root, Runner: latestAwareRunner(), OSReleasePath: osRelease, Logf: func(string, ...any) {}}
+
+	if _, err := orch.Install(context.Background(), "2026.08.01", Options{Latest: true, Base: "2026.07.01"}); err == nil {
+		t.Fatal("expected error for mismatched base manifest release")
+	}
+}
+
+func TestInstallLatestOmitsUndeclaredOptionalPackage(t *testing.T) {
+	root, osRelease := setupRoot(t)
+	// Base manifest omits the optional "metalium" system package.
+	noMetalium := strings.Replace(testStackManifest, `,
+    "metalium": "5.0.0"`, ``, 1)
+	if noMetalium == testStackManifest {
+		t.Fatal("test fixture not modified; metalium line not found")
+	}
+	mustWrite(t, filepath.Join(root, "releases", "2026.09.01.json"),
+		strings.Replace(noMetalium, `"release": "2026.05.16"`, `"release": "2026.09.01"`, 1))
+	runner := latestAwareRunner()
+	orch := &Orchestrator{Root: root, Runner: runner, OSReleasePath: osRelease, Logf: func(string, ...any) {}}
+
+	if _, err := orch.Install(context.Background(), "2026.09.02", Options{Latest: true, Base: "2026.09.01"}); err != nil {
+		t.Fatalf("Install --latest: %v", err)
+	}
+	specs := installSpecs(runner)
+	for _, s := range specs {
+		if s == "tt-metalium" || strings.HasPrefix(s, "tt-metalium=") {
+			t.Errorf("optional package omitted in base must not be installed in --latest mode; specs: %v", specs)
+		}
+	}
+	// Required build packages are still installed unpinned.
+	if !contains(specs, "cmake") {
+		t.Errorf("expected required package cmake in specs: %v", specs)
+	}
 }

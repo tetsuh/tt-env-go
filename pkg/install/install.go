@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/tetsuh/tt-env-go/pkg/gitclone"
@@ -58,6 +59,22 @@ func (o *Orchestrator) logf(format string, args ...any) {
 	slog.Info(fmt.Sprintf(format, args...))
 }
 
+// Options configures an install.
+type Options struct {
+	// DryRun resolves and logs the planned actions without staging anything.
+	DryRun bool
+	// Force reinstalls an already installed release.
+	Force bool
+	// Latest installs the latest available versions (unpinned system/pip
+	// packages, git components at their remote HEAD) instead of the pinned
+	// versions in the manifest. Base supplies the release structure.
+	Latest bool
+	// Base names the release manifest whose structure (packages, repos, git and
+	// container components) seeds a --latest install. When empty, the release
+	// being installed is used as its own template.
+	Base string
+}
+
 // plan captures the resolved actions for an install, built once from the stack
 // and OS manifests so the dry-run and real paths share the same logic.
 type plan struct {
@@ -75,47 +92,54 @@ type plan struct {
 	// managedCommandNames is the set of command names already provided by git or
 	// container component wrappers; they are excluded from system bin links.
 	managedCommandNames map[string]bool
+	// latest reports whether this is a --latest install: system and pip packages
+	// are installed unpinned and git components are pinned to their remote HEAD.
+	latest bool
 }
 
-// Install installs the named release. When dryRun is true it resolves and logs
-// the planned actions without staging anything. When force is true an already
-// installed release is reinstalled.
-func (o *Orchestrator) Install(ctx context.Context, release string, dryRun, force bool) (version.Result, error) {
+// Install installs the named release. When opts.DryRun is true it resolves and
+// logs the planned actions without staging anything. When opts.Force is true an
+// already installed release is reinstalled. When opts.Latest is true the latest
+// available versions are installed using opts.Base for the release structure.
+func (o *Orchestrator) Install(ctx context.Context, release string, opts Options) (version.Result, error) {
 	if err := version.ValidateRelease(release); err != nil {
 		return version.Result{}, err
 	}
 
-	manifestPath := filepath.Join(o.Root, "releases", release+".json")
-	m, err := manifest.Load(manifestPath)
+	m, err := o.loadPlanManifest(release, opts)
 	if err != nil {
 		return version.Result{}, err
 	}
-	if m.Release != release {
-		return version.Result{}, fmt.Errorf("install: release manifest %s declares %q, expected %q", manifestPath, m.Release, release)
+
+	inst := &version.Installer{Root: o.Root}
+
+	// A --latest install would otherwise silently no-op on an already installed
+	// release; require --force so refreshing to latest versions is explicit.
+	if opts.Latest && !opts.DryRun && !opts.Force && inst.IsInstalled(release) {
+		return version.Result{}, fmt.Errorf("install: release %s is already installed; pass --force to refresh it to the latest versions", release)
 	}
 
-	if dryRun {
-		p, err := o.buildPlan(m)
+	if opts.DryRun {
+		p, err := o.buildPlan(ctx, m, opts.Latest)
 		if err != nil {
 			return version.Result{}, err
 		}
 		o.logDryRun(release, p)
-		return version.Result{Release: release, Path: (&version.Installer{Root: o.Root}).ReleaseDir(release)}, nil
+		return version.Result{Release: release, Path: inst.ReleaseDir(release)}, nil
 	}
 
-	inst := &version.Installer{Root: o.Root}
-	var opts []version.Option
-	if force {
-		opts = append(opts, version.WithForce(true))
+	var instOpts []version.Option
+	if opts.Force {
+		instOpts = append(instOpts, version.WithForce(true))
 	}
 
 	res, err := inst.Install(release, func(stagingDir string) error {
-		p, err := o.buildPlan(m)
+		p, err := o.buildPlan(ctx, m, opts.Latest)
 		if err != nil {
 			return err
 		}
 		return o.stage(ctx, stagingDir, p)
-	}, opts...)
+	}, instOpts...)
 	if err != nil {
 		return version.Result{}, err
 	}
@@ -135,9 +159,44 @@ func (o *Orchestrator) Install(ctx context.Context, release string, dryRun, forc
 	return res, nil
 }
 
+// loadPlanManifest loads the manifest that supplies the install plan. For a
+// normal install this is the release's own manifest; for a --latest install it
+// is opts.Base (defaulting to the release), used only for its structure.
+func (o *Orchestrator) loadPlanManifest(release string, opts Options) (*manifest.Manifest, error) {
+	if opts.Latest {
+		base := opts.Base
+		if base == "" {
+			base = release
+		} else if err := version.ValidateRelease(base); err != nil {
+			return nil, err
+		}
+		manifestPath := filepath.Join(o.Root, "releases", base+".json")
+		m, err := manifest.Load(manifestPath)
+		if err != nil {
+			return nil, err
+		}
+		if m.Release != base {
+			return nil, fmt.Errorf("install: base manifest %s declares %q, expected %q", manifestPath, m.Release, base)
+		}
+		return m, nil
+	}
+
+	manifestPath := filepath.Join(o.Root, "releases", release+".json")
+	m, err := manifest.Load(manifestPath)
+	if err != nil {
+		return nil, err
+	}
+	if m.Release != release {
+		return nil, fmt.Errorf("install: release manifest %s declares %q, expected %q", manifestPath, m.Release, release)
+	}
+	return m, nil
+}
+
 // buildPlan resolves the OS manifest and the concrete system/pip packages, git
-// components, and container wrappers for the release.
-func (o *Orchestrator) buildPlan(m *manifest.Manifest) (*plan, error) {
+// components, and container wrappers for the release. When latest is true,
+// system and pip packages are installed unpinned and git components are pinned
+// to their remote HEAD.
+func (o *Orchestrator) buildPlan(ctx context.Context, m *manifest.Manifest, latest bool) (*plan, error) {
 	osm, key, err := o.resolveOSManifest()
 	if err != nil {
 		return nil, err
@@ -153,14 +212,15 @@ func (o *Orchestrator) buildPlan(m *manifest.Manifest) (*plan, error) {
 		pkgManager:    pkgManager,
 		useSystem:     osm.UseSystemPackages(),
 		requiredRepos: osm.RequiredRepos(),
+		latest:        latest,
 	}
 
 	if p.useSystem {
-		p.systemPackages, err = resolveSystemPackages(osm, m)
+		p.systemPackages, err = resolveSystemPackages(osm, m, latest)
 		if err != nil {
 			return nil, err
 		}
-		p.pipPackages, err = resolvePipPackages(m)
+		p.pipPackages, err = resolvePipPackages(m, latest)
 		if err != nil {
 			return nil, err
 		}
@@ -171,7 +231,14 @@ func (o *Orchestrator) buildPlan(m *manifest.Manifest) (*plan, error) {
 		if err := validateComponentName(name); err != nil {
 			return nil, err
 		}
-		p.gitComponents[name] = gitclone.Component{URL: gc.URL, Version: gc.Version}
+		ver := gc.Version
+		if latest {
+			ver, err = (&gitclone.Cloner{Runner: o.Runner}).ResolveHead(ctx, gc.URL)
+			if err != nil {
+				return nil, fmt.Errorf("install: resolve latest revision for git component %q: %w", name, err)
+			}
+		}
+		p.gitComponents[name] = gitclone.Component{URL: gc.URL, Version: ver}
 	}
 
 	p.containerRefs = make(map[string]string)
@@ -218,8 +285,8 @@ func (o *Orchestrator) stage(ctx context.Context, stagingDir string, p *plan) er
 		if err := o.installSystemPackages(ctx, p); err != nil {
 			return err
 		}
-		if err := (&venv.Provisioner{Runner: o.Runner}).Provision(ctx, stagingDir, p.pipPackages); err != nil {
-			return fmt.Errorf("install: provision virtualenv: %w", err)
+		if err := o.provisionVenv(ctx, stagingDir, p); err != nil {
+			return err
 		}
 		if err := o.createSystemBinLinks(stagingDir, p); err != nil {
 			return err
@@ -234,6 +301,28 @@ func (o *Orchestrator) stage(ctx context.Context, stagingDir string, p *plan) er
 		return err
 	}
 	return o.installContainerComponents(stagingDir, p)
+}
+
+// provisionVenv creates the staging virtualenv and installs the resolved pip
+// packages. In latest mode the packages are installed unpinned so pip selects
+// the newest compatible versions.
+func (o *Orchestrator) provisionVenv(ctx context.Context, stagingDir string, p *plan) error {
+	prov := &venv.Provisioner{Runner: o.Runner}
+	if p.latest {
+		names := make([]string, 0, len(p.pipPackages))
+		for name := range p.pipPackages {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		if err := prov.ProvisionLatest(ctx, stagingDir, names); err != nil {
+			return fmt.Errorf("install: provision virtualenv: %w", err)
+		}
+		return nil
+	}
+	if err := prov.Provision(ctx, stagingDir, p.pipPackages); err != nil {
+		return fmt.Errorf("install: provision virtualenv: %w", err)
+	}
+	return nil
 }
 
 // installSystemPackages configures required repositories and installs the
@@ -357,7 +446,11 @@ func (o *Orchestrator) resolveOSManifest() (*manifest.OSManifest, string, error)
 
 // logDryRun logs the planned actions without performing them.
 func (o *Orchestrator) logDryRun(release string, p *plan) {
-	o.logf("[dry-run] Would install release %s (OS manifest %s, package manager %s)", release, p.osManifestKey, p.pkgManager)
+	mode := ""
+	if p.latest {
+		mode = " (latest available versions)"
+	}
+	o.logf("[dry-run] Would install release %s%s (OS manifest %s, package manager %s)", release, mode, p.osManifestKey, p.pkgManager)
 	if p.useSystem {
 		for _, repo := range p.requiredRepos {
 			o.logf("[dry-run] Would add repository %s", repo)
@@ -370,7 +463,11 @@ func (o *Orchestrator) logDryRun(release string, p *plan) {
 			}
 		}
 		for name, ver := range p.pipPackages {
-			o.logf("[dry-run] Would install pip package %s==%s", name, ver)
+			if ver == "" {
+				o.logf("[dry-run] Would install pip package %s", name)
+			} else {
+				o.logf("[dry-run] Would install pip package %s==%s", name, ver)
+			}
 		}
 		o.logf("[dry-run] Would create system/venv bin links for installed commands")
 	} else {
@@ -378,8 +475,8 @@ func (o *Orchestrator) logDryRun(release string, p *plan) {
 			o.logf("[dry-run] Would download component %s and verify its checksum", name)
 		}
 	}
-	for name := range p.gitComponents {
-		o.logf("[dry-run] Would clone git component %s and create its wrapper", name)
+	for name, gc := range p.gitComponents {
+		o.logf("[dry-run] Would clone git component %s at %s and create its wrapper", name, gc.Version)
 	}
 	for name, ref := range p.containerRefs {
 		o.logf("[dry-run] Would create container component wrapper for %s using image %s", name, ref)

@@ -353,3 +353,70 @@ func TestProvisionRejectsSymlinkComponentDir(t *testing.T) {
 	}
 	wantCommands(t, runner, nil)
 }
+
+func TestResolveHead(t *testing.T) {
+	lsRemote := "ref: refs/heads/main\tHEAD\n" + studioSHA + "\tHEAD\n"
+	runner := &packagemanager.MockRunner{Strict: true, Responses: []packagemanager.CommandResponse{
+		{Output: []byte(lsRemote)},
+	}}
+	c := &Cloner{Runner: runner}
+
+	sha, err := c.ResolveHead(context.Background(), studioURL)
+	if err != nil {
+		t.Fatalf("ResolveHead: %v", err)
+	}
+	if sha != studioSHA {
+		t.Fatalf("ResolveHead = %q, want %q", sha, studioSHA)
+	}
+	wantCommands(t, runner, []string{
+		"git ls-remote --symref -- " + studioURL + " HEAD",
+	})
+}
+
+func TestResolveHeadLowercasesSHA(t *testing.T) {
+	upper := "B1C2D3E4F5061728394A5B6C7D8E9F0011223344"
+	runner := &packagemanager.MockRunner{Strict: true, Responses: []packagemanager.CommandResponse{
+		{Output: []byte(upper + "\tHEAD\n")},
+	}}
+	c := &Cloner{Runner: runner}
+
+	sha, err := c.ResolveHead(context.Background(), inferURL)
+	if err != nil {
+		t.Fatalf("ResolveHead: %v", err)
+	}
+	if sha != inferSHA {
+		t.Fatalf("ResolveHead = %q, want %q", sha, inferSHA)
+	}
+}
+
+func TestResolveHeadNoMatch(t *testing.T) {
+	runner := &packagemanager.MockRunner{Strict: true, Responses: []packagemanager.CommandResponse{
+		{Output: []byte("ref: refs/heads/main\tHEAD\n")},
+	}}
+	c := &Cloner{Runner: runner}
+
+	if _, err := c.ResolveHead(context.Background(), studioURL); err == nil {
+		t.Fatalf("ResolveHead: expected error when no SHA line is present")
+	}
+}
+
+func TestResolveHeadCommandError(t *testing.T) {
+	runner := &packagemanager.MockRunner{Strict: true, Responses: []packagemanager.CommandResponse{
+		{Err: errors.New("boom")},
+	}}
+	c := &Cloner{Runner: runner}
+
+	if _, err := c.ResolveHead(context.Background(), studioURL); err == nil {
+		t.Fatalf("ResolveHead: expected error when git fails")
+	}
+}
+
+func TestResolveHeadRejectsInvalidURL(t *testing.T) {
+	runner := &packagemanager.MockRunner{Strict: true}
+	c := &Cloner{Runner: runner}
+
+	if _, err := c.ResolveHead(context.Background(), "--upload-pack=evil"); err == nil {
+		t.Fatalf("ResolveHead: expected error for invalid url")
+	}
+	wantCommands(t, runner, nil)
+}
