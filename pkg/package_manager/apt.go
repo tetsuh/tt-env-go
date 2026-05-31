@@ -2,7 +2,9 @@ package packagemanager
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os/exec"
 	"strings"
 )
 
@@ -16,6 +18,8 @@ type AptManager struct {
 	// remove) are prefixed with sudo. Read-only queries never use sudo.
 	Sudo bool
 }
+
+var _ PackageManager = (*AptManager)(nil)
 
 // NewAptManager returns an AptManager that runs commands through runner with
 // sudo enabled. If runner is nil the production ExecRunner is used.
@@ -110,8 +114,13 @@ func (m *AptManager) IsInstalled(ctx context.Context, name string) (bool, error)
 	if err == nil {
 		return false, nil
 	}
-	// dpkg-query exits non-zero for unknown/not-installed packages; treat that
-	// as "not installed" but surface any other failure (e.g. missing binary).
+	// dpkg-query exits with status 1 for unknown/not-installed packages.
+	// Preferring the exit code keeps the check correct regardless of locale; the
+	// message match is only a fallback for runners that do not surface an exit
+	// code. Any other failure (e.g. missing binary) is surfaced as an error.
+	if isExitCode(err, 1) {
+		return false, nil
+	}
 	if strings.Contains(string(out), "no packages found matching") {
 		return false, nil
 	}
@@ -128,6 +137,17 @@ func validateArg(label, value string) error {
 		return fmt.Errorf("%s must not start with '-': %q", label, value)
 	}
 	return nil
+}
+
+// isExitCode reports whether err is an *exec.ExitError whose process exited with
+// the given status code. It lets adapters classify "not installed" by exit code
+// rather than locale-sensitive output.
+func isExitCode(err error, code int) bool {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode() == code
+	}
+	return false
 }
 
 // commandError wraps a command failure with its name, args, and trimmed output.

@@ -3,7 +3,9 @@ package packagemanager
 import (
 	"context"
 	"errors"
+	"os/exec"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -140,6 +142,14 @@ func TestAptManagerIsInstalled(t *testing.T) {
 			want: false,
 		},
 		{
+			name: "not installed via exit code (localized output)",
+			response: CommandResponse{
+				Output: []byte("dpkg-query: aucun paquet ne correspond à tt-smi"),
+				Err:    exitErr(t, 1),
+			},
+			want: false,
+		},
+		{
 			name:     "config files only",
 			response: CommandResponse{Output: []byte("deinstall ok config-files")},
 			want:     false,
@@ -216,4 +226,19 @@ func wantCommands(t *testing.T, runner *MockRunner, want []string) {
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("commands = %v, want %v", got, want)
 	}
+}
+
+// exitErr runs a process that exits with code so that tests can supply a real
+// *exec.ExitError to MockRunner, exercising the exit-code classification path.
+func exitErr(t *testing.T, code int) error {
+	t.Helper()
+	err := exec.Command("sh", "-c", "exit "+strconv.Itoa(code)).Run()
+	if err == nil {
+		t.Fatalf("expected non-zero exit for code %d", code)
+	}
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) {
+		t.Fatalf("expected *exec.ExitError, got %T", err)
+	}
+	return err
 }
