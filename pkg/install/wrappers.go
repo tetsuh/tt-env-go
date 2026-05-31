@@ -142,6 +142,9 @@ func renderVenvPythonWrapper(command, venvSubdir string) ([]byte, error) {
 // renderAbsolutePythonWrapper renders a python wrapper that targets an absolute
 // system command path through the release virtualenv.
 func renderAbsolutePythonWrapper(targetPath, venvSubdir string) ([]byte, error) {
+	if targetPath == "" || !filepath.IsAbs(targetPath) {
+		return nil, fmt.Errorf("install: target command path must be absolute: %q", targetPath)
+	}
 	return renderPythonWrapper(pythonWrapperData{
 		VenvSubdir:    venvSubdir,
 		TargetCommand: shellSingleQuote(targetPath),

@@ -65,6 +65,31 @@ func TestDiffComparesAllSections(t *testing.T) {
 	}
 }
 
+func TestDiffShowsComponentMetadataChange(t *testing.T) {
+	sha1 := strings.Repeat("a", 64)
+	sha2 := strings.Repeat("b", 64)
+	left := &Manifest{Release: "a", Components: map[string]Component{
+		"tt-kmd": {Version: "1.0.0", DownloadURL: "https://x/a", SHA256: sha1},
+	}}
+	right := &Manifest{Release: "b", Components: map[string]Component{
+		"tt-kmd": {Version: "1.0.0", DownloadURL: "https://x/a", SHA256: sha2},
+	}}
+
+	d := Diff(left, right)
+	var row *DiffRow
+	for i := range d.Rows {
+		if d.Rows[i].Item == "components.tt-kmd" {
+			row = &d.Rows[i]
+		}
+	}
+	if row == nil {
+		t.Fatal("expected a components.tt-kmd row for a checksum-only change")
+	}
+	if !strings.Contains(row.Left, sha1) || !strings.Contains(row.Right, sha2) {
+		t.Errorf("row should surface the checksum change: %q -> %q", row.Left, row.Right)
+	}
+}
+
 func TestDiffRowsSortedWithinSection(t *testing.T) {
 	left := &Manifest{Release: "a", Components: comps(map[string]string{"zeta": "1", "alpha": "1"})}
 	right := &Manifest{Release: "b", Components: comps(map[string]string{"mid": "1"})}

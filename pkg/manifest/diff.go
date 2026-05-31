@@ -93,16 +93,22 @@ func sortedUnionKeys(left, right map[string]string) []string {
 	return keys
 }
 
-// componentVersionStrings flattens components into their version strings keyed
-// by component name, preserving the prior diff output for string-form
-// components.
+// componentVersionStrings flattens components into a comparable string keyed by
+// component name. Components without download metadata render as their bare
+// version (preserving the prior diff output); components that declare a download
+// URL or checksum include that metadata so source/integrity changes are visible
+// even when the version is unchanged.
 func componentVersionStrings(comps map[string]Component) map[string]string {
 	if comps == nil {
 		return nil
 	}
 	out := make(map[string]string, len(comps))
 	for name, c := range comps {
-		out[name] = c.Version
+		if c.DownloadURL == "" && c.SHA256 == "" {
+			out[name] = c.Version
+			continue
+		}
+		out[name] = fmt.Sprintf("%s download_url=%s sha256=%s", c.Version, c.DownloadURL, c.SHA256)
 	}
 	return out
 }
