@@ -43,3 +43,24 @@ var pipPackages = []string{
 	"elasticsearch",
 	"tt-burnin",
 }
+
+// pipPackageCommands are the bin command names that are provided by pip
+// packages. When such a command is found as a system command and a release
+// virtualenv exists, the installer writes an absolute python wrapper rather than
+// a symlink, mirroring proto1's TT_PACKAGE_MANAGER_PIP_PACKAGE_COMMANDS.
+var pipPackageCommands = map[string]bool{
+	"tt-smi":    true,
+	"tt-burnin": true,
+}
+
+// preferredSystemCommandDirs is the ordered allowlist of directories searched
+// for an existing system command when creating bin links. It mirrors proto1's
+// TT_INSTALL_SYSTEM_COMMAND_DIRS default.
+var preferredSystemCommandDirs = []string{
+	"/usr/local/bin",
+	"/usr/bin",
+	"/bin",
+	"/usr/local/sbin",
+	"/usr/sbin",
+	"/sbin",
+}

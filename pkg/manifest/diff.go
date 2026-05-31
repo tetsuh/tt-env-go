@@ -30,7 +30,8 @@ func Diff(left, right *Manifest) DiffResult {
 		LeftRelease:  left.Release,
 		RightRelease: right.Release,
 	}
-	appendStringSection(&res.Rows, "components", left.Components, right.Components)
+	appendStringSection(&res.Rows, "components",
+		componentVersionStrings(left.Components), componentVersionStrings(right.Components))
 	appendStringSection(&res.Rows, "system_packages", left.SystemPackages, right.SystemPackages)
 	appendStringSection(&res.Rows, "python_packages", left.PythonPackages, right.PythonPackages)
 	appendStringSection(&res.Rows, "git_components",
@@ -90,6 +91,26 @@ func sortedUnionKeys(left, right map[string]string) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// componentVersionStrings flattens components into a comparable string keyed by
+// component name. Components without download metadata render as their bare
+// version (preserving the prior diff output); components that declare a download
+// URL or checksum include that metadata so source/integrity changes are visible
+// even when the version is unchanged.
+func componentVersionStrings(comps map[string]Component) map[string]string {
+	if comps == nil {
+		return nil
+	}
+	out := make(map[string]string, len(comps))
+	for name, c := range comps {
+		if c.DownloadURL == "" && c.SHA256 == "" {
+			out[name] = c.Version
+			continue
+		}
+		out[name] = fmt.Sprintf("%s download_url=%s sha256=%s", c.Version, c.DownloadURL, c.SHA256)
+	}
+	return out
 }
 
 // gitComponentStrings flattens git components into a comparable "url@version"

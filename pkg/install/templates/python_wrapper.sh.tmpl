@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+VERSION_DIR="$(cd "${SCRIPT_DIR}/.." && pwd -P)"
+VENV_DIR="${VERSION_DIR}/{{.VenvSubdir}}"
+VENV_PYTHON="${VENV_DIR}/bin/python"
+
+VIRTUAL_ENV="${VENV_DIR}"
+PATH="${VENV_DIR}/bin${PATH:+:${PATH}}"
+export VIRTUAL_ENV PATH
+
+{{- if .VenvCommandName}}
+VENV_COMMAND_NAME={{.VenvCommandName}}
+TARGET_COMMAND="${VENV_DIR}/bin/${VENV_COMMAND_NAME}"
+{{- else}}
+TARGET_COMMAND={{.TargetCommand}}
+{{- end}}
+first_line=""
+IFS= read -r -n 128 first_line <"$TARGET_COMMAND" || true
+if [[ -x "$VENV_PYTHON" && "$first_line" == '#!'*python* ]]; then
+  exec "$VENV_PYTHON" "$TARGET_COMMAND" "$@"
+fi
+
+exec "$TARGET_COMMAND" "$@"
