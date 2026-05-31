@@ -32,7 +32,7 @@ jobs:
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
-          if ! [[ "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+          if ! [[ "${tag}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
             echo "Tag '${tag}' is not a valid SemVer release tag (expected vMAJOR.MINOR.PATCH[-prerelease][+build])." >&2
             exit 1
           fi
@@ -89,7 +89,9 @@ jobs:
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
           args=(release create "${tag}" dist/tt-env-* dist/checksums.txt --title "${tag}")
-          if [[ "${tag}" == *-* ]]; then
+          # Drop build metadata before checking for a prerelease hyphen.
+          core="${tag%%+*}"
+          if [[ "${core}" == *-* ]]; then
             args+=(--prerelease)
           fi
           if [[ "${have_notes}" == "true" ]]; then
