@@ -17,6 +17,8 @@ type AptManager struct {
 	Sudo bool
 }
 
+var _ PackageManager = (*AptManager)(nil)
+
 // NewAptManager returns an AptManager that runs commands through runner with
 // sudo enabled. If runner is nil the production ExecRunner is used.
 func NewAptManager(runner CommandRunner) *AptManager {
