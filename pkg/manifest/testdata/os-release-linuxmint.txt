@@ -1,0 +1,7 @@
+NAME="Linux Mint"
+VERSION="22.1 (Xia)"
+ID=linuxmint
+ID_LIKE="ubuntu debian"
+VERSION_ID="22.1"
+VERSION_CODENAME=xia
+UBUNTU_CODENAME=noble
