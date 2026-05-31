@@ -1,15 +1,18 @@
-// Package version exposes build-time version metadata for the tt-env binary.
+// Package buildinfo exposes build-time version metadata for the tt-env binary.
 //
 // The exported variables are intended to be overridden at build time via the
 // Go linker, for example:
 //
-//	go build -ldflags "-X github.com/tetsuh/tt-env-go/pkg/version.Version=0.1.0 \
-//	    -X github.com/tetsuh/tt-env-go/pkg/version.Commit=$(git rev-parse HEAD) \
-//	    -X github.com/tetsuh/tt-env-go/pkg/version.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+//	go build -ldflags "-X github.com/tetsuh/tt-env-go/pkg/buildinfo.Version=0.1.0 \
+//	    -X github.com/tetsuh/tt-env-go/pkg/buildinfo.Commit=$(git rev-parse HEAD) \
+//	    -X github.com/tetsuh/tt-env-go/pkg/buildinfo.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 //
 // When the variables are not overridden the binary reports development
 // defaults so an unstamped build is still clearly identifiable.
-package version
+//
+// This metadata is distinct from the github.com/tetsuh/tt-env-go/pkg/version
+// package, which manages installed Tenstorrent stack releases.
+package buildinfo
 
 import "fmt"
 
