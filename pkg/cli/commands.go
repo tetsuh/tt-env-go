@@ -60,17 +60,12 @@ var updateCmd = &cobra.Command{
 
 // diffCmd represents the diff command
 var diffCmd = &cobra.Command{
-	Use:   "diff <release1> [release2]",
+	Use:   "diff <release-a> <release-b>",
 	Short: "Compare two release manifests",
 	Long:  `Displays differences in versions and dependencies between two Tenstorrent release manifests.`,
-	Args:  cobra.RangeArgs(1, 2),
+	Args:  cobra.ExactArgs(2),
 	Run: func(cmd *cobra.Command, args []string) {
-		r1 := args[0]
-		r2 := "current"
-		if len(args) > 1 {
-			r2 = args[1]
-		}
-		slog.Info("Running diff command", slog.String("release1", r1), slog.String("release2", r2))
+		slog.Info("Running diff command", slog.String("release-a", args[0]), slog.String("release-b", args[1]))
 	},
 }
 
