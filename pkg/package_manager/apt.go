@@ -115,7 +115,7 @@ func (m *AptManager) IsInstalled(ctx context.Context, name string) (bool, error)
 	if strings.Contains(string(out), "no packages found matching") {
 		return false, nil
 	}
-	return false, commandError("dpkg-query", []string{name}, out, err)
+	return false, commandError("dpkg-query", []string{"-W", "-f=${Status}", name}, out, err)
 }
 
 // validateArg rejects empty values and values that look like command-line
