@@ -23,8 +23,8 @@ var useCmd = &cobra.Command{
 	Short: "Switch the active Tenstorrent stack release",
 	Long:  `Updates the active version symlink and configures system shims for the specified release.`,
 	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		slog.Info("Running use command", slog.String("release", args[0]))
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runUse(cmd, args[0])
 	},
 }
 
@@ -33,8 +33,9 @@ var listCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all installed and available releases",
 	Long:  `Displays a list of all local installed releases and all available remote releases in the catalog.`,
-	Run: func(cmd *cobra.Command, args []string) {
-		slog.Info("Running list command")
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runList(cmd)
 	},
 }
 
