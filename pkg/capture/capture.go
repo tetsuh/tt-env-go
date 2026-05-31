@@ -9,20 +9,24 @@
 // cloned git component. The base release therefore must already be installed
 // under Root/versions/<base>; its manifest supplies the component structure
 // (which packages, repos, and containers exist) that the probed versions fill
-// in. Container component digests are copied from the base release unchanged
-// (ghcr probing is handled separately).
+// in. Container component digests are resolved from GHCR: each image-backed
+// container component is pinned to the current digest of its `latest` tag,
+// while ref-only components are copied from the base unchanged.
 package capture
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/tetsuh/tt-env-go/pkg/manifest"
 	packagemanager "github.com/tetsuh/tt-env-go/pkg/package_manager"
@@ -32,6 +36,18 @@ import (
 
 // osManifestSuffix is the file extension of OS manifests under Root/manifests.
 const osManifestSuffix = ".env"
+
+// defaultRegistryBaseURL is the GHCR base URL used to resolve container image
+// digests. It is overridable on the Capturer so tests can point at an httptest
+// server.
+const defaultRegistryBaseURL = "https://ghcr.io"
+
+// ghcrLatestTag is the image reference whose digest capture pins, mirroring
+// proto1's _capture_ghcr_latest_digest which always resolves "latest".
+const ghcrLatestTag = "latest"
+
+// digestRe matches a registry content digest (sha256:<64 hex>).
+var digestRe = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 // datedReleaseRe matches the YYYY.MM.DD release names that are eligible to be a
 // default capture base.
@@ -51,11 +67,22 @@ type Capturer struct {
 	// Logf logs informational progress. When nil, slog.Info is used.
 	Logf func(format string, args ...any)
 
+	// RegistryBaseURL is the base URL used to resolve GHCR container digests.
+	// When empty, defaultRegistryBaseURL is used. It exists primarily to make
+	// digest resolution testable against an httptest server.
+	RegistryBaseURL string
+	// HTTPClient performs the GHCR token and manifest requests. When nil, a
+	// client with a sane timeout is used.
+	HTTPClient *http.Client
+
 	// The probe functions below are injectable for testing; when nil the
 	// runner-backed defaults are used.
 	DpkgVersion    func(ctx context.Context, name string) (string, bool, error)
 	PipShowVersion func(ctx context.Context, venvPython, pkg string) (string, bool, error)
 	GitHead        func(ctx context.Context, repoDir string) (string, error)
+	// GHCRDigest resolves the content digest of imageURL at the given tag. When
+	// nil, the default net/http-based resolver is used.
+	GHCRDigest func(ctx context.Context, imageURL, tag string) (string, error)
 }
 
 // Options modifies a capture.
@@ -123,6 +150,13 @@ func (c *Capturer) gitHead(ctx context.Context, repoDir string) (string, error) 
 	return c.defaultGitHead(ctx, repoDir)
 }
 
+func (c *Capturer) ghcrDigest(ctx context.Context, imageURL, tag string) (string, error) {
+	if c.GHCRDigest != nil {
+		return c.GHCRDigest(ctx, imageURL, tag)
+	}
+	return c.defaultGHCRDigest(ctx, imageURL, tag)
+}
+
 // Capture probes the installed base release and renders (and, unless DryRun,
 // writes) a local-only manifest for release.
 func (c *Capturer) Capture(ctx context.Context, release string, opts Options) (Result, error) {
@@ -161,12 +195,12 @@ func (c *Capturer) Capture(ctx context.Context, release string, opts Options) (R
 		return Result{}, err
 	}
 
-	// Carry container components over from the base unchanged (ghcr probing is
-	// handled separately). Normalize to a non-nil map so the rendered manifest
-	// emits an object rather than a JSON null.
-	containerComponents := baseManifest.ContainerComponents
-	if containerComponents == nil {
-		containerComponents = map[string]manifest.ContainerComponent{}
+	// Resolve container component digests from GHCR. Ref-only components are
+	// carried over unchanged; image-backed components are pinned to the current
+	// digest of their latest tag.
+	containerComponents, err := c.captureContainerComponents(ctx, baseManifest)
+	if err != nil {
+		return Result{}, err
 	}
 
 	captured := &manifest.Manifest{
@@ -385,6 +419,130 @@ func (c *Capturer) captureGitComponents(ctx context.Context, inst *version.Insta
 		out[name] = manifest.GitComponent{URL: base.GitComponents[name].URL, Version: head}
 	}
 	return out, nil
+}
+
+// captureContainerComponents resolves the base release's container components.
+// Ref-only components (those that alias another component) are carried over
+// unchanged; image-backed components are pinned to the current GHCR digest of
+// their latest tag, mirroring proto1's _capture_container_components. The
+// returned map is always non-nil so the rendered manifest emits an object
+// rather than a JSON null.
+func (c *Capturer) captureContainerComponents(ctx context.Context, base *manifest.Manifest) (map[string]manifest.ContainerComponent, error) {
+	out := make(map[string]manifest.ContainerComponent, len(base.ContainerComponents))
+	names := make([]string, 0, len(base.ContainerComponents))
+	for name := range base.ContainerComponents {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		cc := base.ContainerComponents[name]
+		// Ref-only components alias another component; copy them unchanged.
+		// A ref takes precedence over an image URL, matching proto1.
+		if cc.Ref != "" || cc.ImageURL == "" {
+			out[name] = cc
+			continue
+		}
+		digest, err := c.ghcrDigest(ctx, cc.ImageURL, ghcrLatestTag)
+		if err != nil {
+			return nil, fmt.Errorf("capture: resolve container component %q (%s): %w", name, cc.ImageURL, err)
+		}
+		out[name] = manifest.ContainerComponent{ImageURL: cc.ImageURL, ImageTag: digest}
+		c.logf("Pinned container component %s to %s@%s", name, cc.ImageURL, digest)
+	}
+	return out, nil
+}
+
+// defaultGHCRDigest resolves the content digest of a GHCR image at the given tag
+// using an anonymous pull token followed by a manifest HEAD request, reading the
+// Docker-Content-Digest response header. It mirrors proto1's
+// _capture_ghcr_latest_digest but is implemented natively with net/http.
+func (c *Capturer) defaultGHCRDigest(ctx context.Context, imageURL, tag string) (string, error) {
+	const ghcrPrefix = "ghcr.io/"
+	if !strings.HasPrefix(imageURL, ghcrPrefix) {
+		return "", fmt.Errorf("unsupported container registry (only %s is supported): %q", ghcrPrefix, imageURL)
+	}
+	repo := strings.TrimPrefix(imageURL, ghcrPrefix)
+	if repo == "" {
+		return "", fmt.Errorf("container image URL is missing a repository path: %q", imageURL)
+	}
+
+	base := c.RegistryBaseURL
+	if base == "" {
+		base = defaultRegistryBaseURL
+	}
+	base = strings.TrimRight(base, "/")
+
+	token, err := c.ghcrPullToken(ctx, base, repo)
+	if err != nil {
+		return "", err
+	}
+
+	manifestURL := fmt.Sprintf("%s/v2/%s/manifests/%s", base, repo, tag)
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, manifestURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("build manifest request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", strings.Join([]string{
+		"application/vnd.oci.image.index.v1+json",
+		"application/vnd.docker.distribution.manifest.list.v2+json",
+		"application/vnd.oci.image.manifest.v1+json",
+		"application/vnd.docker.distribution.manifest.v2+json",
+	}, ", "))
+
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return "", fmt.Errorf("fetch manifest digest: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("fetch manifest digest: unexpected status %s", resp.Status)
+	}
+
+	digest := strings.TrimSpace(resp.Header.Get("Docker-Content-Digest"))
+	if !digestRe.MatchString(digest) {
+		return "", fmt.Errorf("manifest digest not found or malformed (Docker-Content-Digest=%q)", digest)
+	}
+	return digest, nil
+}
+
+// ghcrPullToken fetches an anonymous pull token for repo from the registry's
+// token endpoint.
+func (c *Capturer) ghcrPullToken(ctx context.Context, base, repo string) (string, error) {
+	tokenURL := fmt.Sprintf("%s/token?service=ghcr.io&scope=repository:%s:pull", base, repo)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, tokenURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("build token request: %w", err)
+	}
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return "", fmt.Errorf("fetch registry token: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("fetch registry token: unexpected status %s", resp.Status)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", fmt.Errorf("read registry token: %w", err)
+	}
+	var payload struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return "", fmt.Errorf("parse registry token: %w", err)
+	}
+	if payload.Token == "" {
+		return "", fmt.Errorf("registry token response did not include a token")
+	}
+	return payload.Token, nil
+}
+
+func (c *Capturer) httpClient() *http.Client {
+	if c.HTTPClient != nil {
+		return c.HTTPClient
+	}
+	return &http.Client{Timeout: 30 * time.Second}
 }
 
 // buildComponents seeds the components map from the base manifest and overrides
