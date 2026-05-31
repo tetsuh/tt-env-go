@@ -231,6 +231,7 @@ func writeMarker(path string, m InstalledMarker) error {
 		return fmt.Errorf("version: write marker: %w", err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
 		return fmt.Errorf("version: finalize marker: %w", err)
 	}
 	return nil
