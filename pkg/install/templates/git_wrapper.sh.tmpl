@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+VERSION_DIR="$(cd "${SCRIPT_DIR}/.." && pwd -P)"
+VENV_DIR="${VERSION_DIR}/{{.VenvSubdir}}"
+VENV_PYTHON="${VENV_DIR}/bin/python"
+
+VIRTUAL_ENV="${VENV_DIR}"
+PATH="${VENV_DIR}/bin${PATH:+:${PATH}}"
+export VIRTUAL_ENV PATH
+
+# Set PYTHONPATH to the component src directory to allow imports
+PYTHONPATH="${VERSION_DIR}/src/{{.Component}}${PYTHONPATH:+:${PYTHONPATH}}"
+export PYTHONPATH
+
+TARGET_COMMAND="${VERSION_DIR}/src/{{.Component}}/{{.Entrypoint}}"
+if [[ ! -f "$TARGET_COMMAND" ]]; then
+  echo "[ERROR] Git component entrypoint not found: $TARGET_COMMAND" >&2
+  exit 127
+fi
+
+first_line=""
+IFS= read -r -n 128 first_line <"$TARGET_COMMAND" || true
+if [[ -x "$VENV_PYTHON" && ( "$first_line" == '#!'*python* || "$TARGET_COMMAND" == *.py ) ]]; then
+  exec "$VENV_PYTHON" "$TARGET_COMMAND" "$@"
+fi
+
+exec "$TARGET_COMMAND" "$@"
