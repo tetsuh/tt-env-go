@@ -43,6 +43,22 @@ go build ./...          # build all packages
 go build -o tt-env ./cmd/tt-env
 ```
 
+## Releases
+
+Tagged releases (`v*`) are published automatically by the
+[release workflow](.github/workflows/release.yml): it cross-compiles
+version-stamped static binaries for `linux/amd64` and `linux/arm64`, generates
+`checksums.txt`, and attaches them to a
+[GitHub Release](https://github.com/tetsuh/tt-env-go/releases). Release notes are
+derived from [`CHANGELOG.md`](CHANGELOG.md).
+
+Each binary embeds its build metadata, viewable with:
+
+```bash
+tt-env version          # tt-env <version> (commit <sha>, built <date>)
+tt-env --version
+```
+
 ## Verification
 
 Run the standard Go toolchain before opening a pull request:

@@ -1,0 +1,102 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Validate tag
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if ! [[ "${tag}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Tag '${tag}' is not a valid SemVer release tag (expected vMAJOR.MINOR.PATCH[-prerelease][+build])." >&2
+            exit 1
+          fi
+
+      - name: Build release binaries
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          commit="$(git rev-parse HEAD)"
+          # Use the commit date (not wall-clock) so rebuilding the same tag is reproducible.
+          date="$(git show -s --format=%cI HEAD)"
+          pkg="github.com/tetsuh/tt-env-go/pkg/version"
+          ldflags="-s -w -X ${pkg}.Version=${version} -X ${pkg}.Commit=${commit} -X ${pkg}.Date=${date}"
+          mkdir -p dist
+          for target in linux/amd64 linux/arm64; do
+            goos="${target%/*}"
+            goarch="${target#*/}"
+            output="dist/tt-env-${goos}-${goarch}"
+            echo "Building ${output}"
+            GOOS="${goos}" GOARCH="${goarch}" go build -trimpath -ldflags "${ldflags}" -o "${output}" ./cmd/tt-env
+          done
+
+      - name: Generate checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum tt-env-* > checksums.txt
+          cat checksums.txt
+
+      - name: Extract release notes
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          notes="dist/notes.md"
+          awk -v ver="${version}" '
+            $0 ~ ("^## \\[" ver "\\]") { capture = 1; next }
+            capture && /^## \[/ { exit }
+            capture && /^\[[^][]+\]: / { exit }
+            capture { print }
+          ' CHANGELOG.md > "${notes}" || true
+          if grep -q '[^[:space:]]' "${notes}"; then
+            echo "have_notes=true" >> "${GITHUB_ENV}"
+          else
+            echo "have_notes=false" >> "${GITHUB_ENV}"
+            echo "No CHANGELOG section found for ${version}; falling back to generated notes."
+          fi
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          args=(release create "${tag}" dist/tt-env-* dist/checksums.txt --title "${tag}")
+          # Drop build metadata before checking for a prerelease hyphen.
+          core="${tag%%+*}"
+          if [[ "${core}" == *-* ]]; then
+            args+=(--prerelease)
+          fi
+          if [[ "${have_notes}" == "true" ]]; then
+            args+=(--notes-file dist/notes.md)
+          else
+            args+=(--generate-notes)
+          fi
+          gh "${args[@]}"
