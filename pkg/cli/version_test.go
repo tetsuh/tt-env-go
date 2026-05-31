@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tetsuh/tt-env-go/pkg/version"
+	"github.com/tetsuh/tt-env-go/pkg/buildinfo"
 )
 
 // resetRootFlags clears the cobra-managed help and version flags so a prior
@@ -38,8 +38,8 @@ func TestVersionCommandOutput(t *testing.T) {
 	}
 
 	got := strings.TrimSpace(buf.String())
-	if got != version.String() {
-		t.Errorf("version output = %q, want %q", got, version.String())
+	if got != buildinfo.String() {
+		t.Errorf("version output = %q, want %q", got, buildinfo.String())
 	}
 }
 
@@ -63,7 +63,7 @@ func TestVersionFlagOutput(t *testing.T) {
 	}
 
 	got := strings.TrimSpace(buf.String())
-	if got != version.String() {
-		t.Errorf("--version output = %q, want %q", got, version.String())
+	if got != buildinfo.String() {
+		t.Errorf("--version output = %q, want %q", got, buildinfo.String())
 	}
 }

@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
-	"github.com/tetsuh/tt-env-go/pkg/version"
+	"github.com/tetsuh/tt-env-go/pkg/buildinfo"
 )
 
 // versionCmd represents the version command
@@ -14,13 +14,13 @@ var versionCmd = &cobra.Command{
 	Long:  `Prints the tt-env version, the git commit it was built from, and the build date.`,
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Fprintln(cmd.OutOrStdout(), version.String())
+		fmt.Fprintln(cmd.OutOrStdout(), buildinfo.String())
 		return nil
 	},
 }
 
 func init() {
 	RootCmd.AddCommand(versionCmd)
-	RootCmd.Version = version.Version
-	RootCmd.SetVersionTemplate(version.String() + "\n")
+	RootCmd.Version = buildinfo.Version
+	RootCmd.SetVersionTemplate(buildinfo.String() + "\n")
 }

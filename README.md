@@ -26,9 +26,10 @@ tt-env-go/
 └── pkg/
     ├── cli/             # Cobra command parser
     ├── logger/          # Structured logging (slog)
+    ├── buildinfo/       # Build version metadata (set via -ldflags)
     ├── manifest/        # Release JSON schema & OS parsing
     ├── package_manager/ # Apt / Dnf adapters
-    ├── version/         # Atomic installs, virtualenvs, git clones
+    ├── version/         # Stack release install / use / list / remove
     ├── shims/           # Wrapper & shim generator
     ├── kmd/             # Kernel module preflights & safe swaps
     └── status/          # Hardware (lspci) & environment probing
