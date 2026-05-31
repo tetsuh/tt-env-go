@@ -36,3 +36,16 @@ go.work.sum
 
 # Project binaries (tt-env CLI, extensionless build output)
 /tt-env
+
+# tt-env runtime artifacts
+shims/
+versions/
+
+# Agent
+.gemini/
+.copilot/
+
+# Local-only planning / session docs (not part of the repo)
+plan.md
+SESSION.md
+HANDOFF.md
