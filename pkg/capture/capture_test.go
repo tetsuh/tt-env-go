@@ -3,6 +3,8 @@ package capture
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -76,6 +78,10 @@ var installedGitHeads = map[string]string{
 	"tt-inference-server": "cfa35731abe68484077d7b6337e7a11c4b2bdaa6",
 }
 
+// fakeGHCRDigest is the digest returned by the injected resolver in tests that
+// do not exercise the real HTTP path.
+const fakeGHCRDigest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+
 func mustWrite(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -122,6 +128,9 @@ func newCapturer(t *testing.T, root, osRelease string) *Capturer {
 		},
 		GitHead: func(_ context.Context, repoDir string) (string, error) {
 			return installedGitHeads[filepath.Base(repoDir)], nil
+		},
+		GHCRDigest: func(_ context.Context, _ /*imageURL*/, _ /*tag*/ string) (string, error) {
+			return fakeGHCRDigest, nil
 		},
 	}
 }
@@ -449,5 +458,140 @@ func TestCaptureFromDescriptionNotesProbeProvenance(t *testing.T) {
 	}
 	if !strings.Contains(m.Description, probeRelease) || !strings.Contains(m.Description, baseRelease) {
 		t.Errorf("description should mention base %q and probe %q, got %q", baseRelease, probeRelease, m.Description)
+	}
+}
+
+func TestCaptureResolvesContainerDigest(t *testing.T) {
+	root, osRelease := setupRoot(t)
+	c := newCapturer(t, root, osRelease)
+
+	var gotImageURL, gotTag string
+	c.GHCRDigest = func(_ context.Context, imageURL, tag string) (string, error) {
+		gotImageURL, gotTag = imageURL, tag
+		return fakeGHCRDigest, nil
+	}
+
+	res, err := c.Capture(context.Background(), "2026.06.01", Options{DryRun: true})
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	var m manifest.Manifest
+	if err := json.Unmarshal(res.ManifestJSON, &m); err != nil {
+		t.Fatalf("rendered manifest invalid: %v", err)
+	}
+
+	img := m.ContainerComponents["tt-metalium-ubuntu24"]
+	// The image-backed component's tag is overwritten with the resolved digest,
+	// even though the base manifest already pinned a (different) digest.
+	if img.ImageTag != fakeGHCRDigest {
+		t.Errorf("image_tag = %q, want resolved digest %q", img.ImageTag, fakeGHCRDigest)
+	}
+	if img.ImageURL == "" {
+		t.Errorf("image_url should be preserved")
+	}
+	if gotImageURL != img.ImageURL || gotTag != "latest" {
+		t.Errorf("resolver called with (%q, %q), want (%q, latest)", gotImageURL, gotTag, img.ImageURL)
+	}
+
+	// The ref-only component is carried over unchanged.
+	ref := m.ContainerComponents["tt-metalium"]
+	if ref.Ref != "tt-metalium-ubuntu24" || ref.ImageURL != "" || ref.ImageTag != "" {
+		t.Errorf("ref-only component changed: %+v", ref)
+	}
+}
+
+func TestCaptureContainerDigestErrorFailsCapture(t *testing.T) {
+	root, osRelease := setupRoot(t)
+	c := newCapturer(t, root, osRelease)
+	c.GHCRDigest = func(_ context.Context, _, _ string) (string, error) {
+		return "", context.DeadlineExceeded
+	}
+	if _, err := c.Capture(context.Background(), "2026.06.01", Options{DryRun: true}); err == nil {
+		t.Fatal("expected capture to fail when a container digest cannot be resolved")
+	}
+}
+
+// newGHCRServer returns an httptest server emulating GHCR's token and manifest
+// HEAD endpoints, returning digest via the Docker-Content-Digest header.
+func newGHCRServer(t *testing.T, digest string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/token":
+			_, _ = w.Write([]byte(`{"token":"test-token"}`))
+		case strings.HasPrefix(r.URL.Path, "/v2/") && strings.Contains(r.URL.Path, "/manifests/"):
+			if r.Method != http.MethodHead {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			w.Header().Set("Docker-Content-Digest", digest)
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+}
+
+func TestDefaultGHCRDigestResolves(t *testing.T) {
+	const digest = "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	srv := newGHCRServer(t, digest)
+	defer srv.Close()
+
+	c := &Capturer{RegistryBaseURL: srv.URL, HTTPClient: srv.Client()}
+	got, err := c.defaultGHCRDigest(context.Background(), "ghcr.io/tenstorrent/tt-metalium", "latest")
+	if err != nil {
+		t.Fatalf("defaultGHCRDigest: %v", err)
+	}
+	if got != digest {
+		t.Errorf("digest = %q, want %q", got, digest)
+	}
+}
+
+func TestDefaultGHCRDigestRejectsNonGHCR(t *testing.T) {
+	c := &Capturer{}
+	if _, err := c.defaultGHCRDigest(context.Background(), "docker.io/library/ubuntu", "latest"); err == nil {
+		t.Fatal("expected error for non-ghcr.io registry")
+	}
+}
+
+func TestDefaultGHCRDigestMalformedDigest(t *testing.T) {
+	srv := newGHCRServer(t, "not-a-digest")
+	defer srv.Close()
+
+	c := &Capturer{RegistryBaseURL: srv.URL, HTTPClient: srv.Client()}
+	if _, err := c.defaultGHCRDigest(context.Background(), "ghcr.io/tenstorrent/tt-metalium", "latest"); err == nil {
+		t.Fatal("expected error for malformed Docker-Content-Digest header")
+	}
+}
+
+func TestDefaultGHCRDigestTokenError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	c := &Capturer{RegistryBaseURL: srv.URL, HTTPClient: srv.Client()}
+	if _, err := c.defaultGHCRDigest(context.Background(), "ghcr.io/tenstorrent/tt-metalium", "latest"); err == nil {
+		t.Fatal("expected error when the token endpoint fails")
+	}
+}
+
+func TestDefaultGHCRDigestManifestNotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/token" {
+			_, _ = w.Write([]byte(`{"token":"test-token"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	c := &Capturer{RegistryBaseURL: srv.URL, HTTPClient: srv.Client()}
+	if _, err := c.defaultGHCRDigest(context.Background(), "ghcr.io/tenstorrent/missing", "latest"); err == nil {
+		t.Fatal("expected error when the manifest HEAD returns 404")
 	}
 }
