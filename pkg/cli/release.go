@@ -39,6 +39,30 @@ func runRemove(cmd *cobra.Command, release string) error {
 	return nil
 }
 
+// runDiff loads two release manifests and prints their side-by-side
+// differences, mirroring proto1 diff_releases.
+func runDiff(cmd *cobra.Command, leftRelease, rightRelease string) error {
+	left, err := loadReleaseManifest(leftRelease)
+	if err != nil {
+		return err
+	}
+	right, err := loadReleaseManifest(rightRelease)
+	if err != nil {
+		return err
+	}
+	return manifest.Diff(left, right).Render(cmd.OutOrStdout())
+}
+
+// loadReleaseManifest resolves and loads the manifest for release from
+// ${TT_HOME}/releases/<release>.json, validating the release name first.
+func loadReleaseManifest(release string) (*manifest.Manifest, error) {
+	if err := version.ValidateRelease(release); err != nil {
+		return nil, err
+	}
+	path := filepath.Join(ttHome(), "releases", release+".json")
+	return manifest.Load(path)
+}
+
 // runList prints the release catalog, marking each release installed or
 // available, mirroring proto1 list_releases.
 func runList(cmd *cobra.Command) error {

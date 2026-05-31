@@ -66,8 +66,8 @@ var diffCmd = &cobra.Command{
 	Short: "Compare two release manifests",
 	Long:  `Displays differences in versions and dependencies between two Tenstorrent release manifests.`,
 	Args:  cobra.ExactArgs(2),
-	Run: func(cmd *cobra.Command, args []string) {
-		slog.Info("Running diff command", slog.String("release-a", args[0]), slog.String("release-b", args[1]))
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runDiff(cmd, args[0], args[1])
 	},
 }
 

@@ -207,3 +207,60 @@ func TestUseCommandExecutesViaCobra(t *testing.T) {
 		t.Errorf("Current() = %q, %v; want 2026.05.16, nil", active, err)
 	}
 }
+
+func TestDiffCommandComparesReleases(t *testing.T) {
+	root := t.TempDir()
+	releasesDir := filepath.Join(root, "releases")
+	writeManifest(t, releasesDir, "2026.04.01.json",
+		`{"release":"2026.04.01","components":{"tt-kmd":"1.0.0"}}`)
+	writeManifest(t, releasesDir, "2026.05.16.json",
+		`{"release":"2026.05.16","components":{"tt-kmd":"2.0.0"}}`)
+	t.Setenv("TT_HOME", root)
+
+	buf := new(bytes.Buffer)
+	diffCmd.SetOut(buf)
+	t.Cleanup(func() { diffCmd.SetOut(nil) })
+
+	if err := runDiff(diffCmd, "2026.04.01", "2026.05.16"); err != nil {
+		t.Fatalf("runDiff() error = %v", err)
+	}
+	got := buf.String()
+	for _, want := range []string{"Item", "2026.04.01", "2026.05.16", "components.tt-kmd", "1.0.0", "2.0.0"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("diff output missing %q\n%s", want, got)
+		}
+	}
+}
+
+func TestDiffCommandMissingManifest(t *testing.T) {
+	root := t.TempDir()
+	writeManifest(t, filepath.Join(root, "releases"), "2026.04.01.json",
+		`{"release":"2026.04.01"}`)
+	t.Setenv("TT_HOME", root)
+
+	if err := runDiff(diffCmd, "2026.04.01", "missing"); err == nil {
+		t.Error("expected error when a manifest is missing")
+	}
+}
+
+func TestDiffCommandRejectsInvalidReleaseName(t *testing.T) {
+	t.Setenv("TT_HOME", t.TempDir())
+	if err := runDiff(diffCmd, "../etc/passwd", "2026.04.01"); err == nil {
+		t.Error("expected error for invalid release name")
+	}
+}
+
+func TestDiffCommandArgs(t *testing.T) {
+	if diffCmd.Args == nil {
+		t.Fatal("diff command must declare an Args validator")
+	}
+	if err := diffCmd.Args(diffCmd, []string{"only-one"}); err == nil {
+		t.Error("expected diff to reject a single argument")
+	}
+	if err := diffCmd.Args(diffCmd, []string{"a", "b", "c"}); err == nil {
+		t.Error("expected diff to reject three arguments")
+	}
+	if err := diffCmd.Args(diffCmd, []string{"a", "b"}); err != nil {
+		t.Errorf("expected diff to accept exactly two arguments, got %v", err)
+	}
+}
