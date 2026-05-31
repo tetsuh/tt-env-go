@@ -1,7 +1,7 @@
 # tt-env-go
 
-A statically compiled, production-ready Go implementation of **tt-env** — an
-environment manager for the Tenstorrent software stack.
+A statically compiled Go implementation of **tt-env** — an environment manager
+for the Tenstorrent software stack.
 
 This repository is the Go successor to the Bash prototype `tt-env-proto1`. It
 targets frictionless cross-compilation to `linux/amd64` and `linux/arm64`,
