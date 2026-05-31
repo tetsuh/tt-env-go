@@ -40,6 +40,9 @@ func DetectOS(path string) (*OSInfo, error) {
 		return &OSInfo{ID: overrideID, VersionID: overrideVersion}, nil
 	}
 
+	if path == "" {
+		path = "/etc/os-release"
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("detect os: %w", err)
