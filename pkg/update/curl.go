@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	packagemanager "github.com/tetsuh/tt-env-go/pkg/package_manager"
 )
@@ -70,6 +71,7 @@ func (f CurlFetcher) Fetch(ctx context.Context, repo, ref, token string) ([]byte
 		"--silent",
 		"--show-error",
 		"--fail",
+		"--max-filesize", strconv.FormatInt(maxCompressedBytes, 10),
 		"--header", "@" + headerFile,
 		"--output", "-",
 		url,
@@ -86,6 +88,8 @@ func (f CurlFetcher) Fetch(ctx context.Context, repo, ref, token string) ([]byte
 	if len(out) == 0 {
 		return nil, errors.New("update: empty manifest archive")
 	}
+	// curl --max-filesize aborts oversized transfers during download; this
+	// post-transfer check is a defensive backstop.
 	if int64(len(out)) > maxCompressedBytes {
 		return nil, errors.New("update: manifest archive exceeds the download size limit")
 	}

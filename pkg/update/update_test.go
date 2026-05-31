@@ -149,6 +149,8 @@ func TestUpdateRequiresToken(t *testing.T) {
 func TestUpdateRejectsInvalidSource(t *testing.T) {
 	cases := []struct{ repo, ref string }{
 		{"no-slash", "main"},
+		{"../..", "main"},
+		{"owner/..", "main"},
 		{"owner/repo", "../escape"},
 		{"owner/repo", "bad ref"},
 	}

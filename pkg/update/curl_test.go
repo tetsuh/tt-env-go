@@ -33,6 +33,9 @@ func TestCurlFetcherReturnsArchive(t *testing.T) {
 	if strings.Contains(joined, "secret-token") {
 		t.Errorf("token must not appear in argv: %s", joined)
 	}
+	if !strings.Contains(joined, "--max-filesize") {
+		t.Errorf("expected --max-filesize size cap in argv: %s", joined)
+	}
 }
 
 func TestCurlFetcherPropagatesError(t *testing.T) {

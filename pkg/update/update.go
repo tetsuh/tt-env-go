@@ -239,11 +239,17 @@ func restore(backup, target string) error {
 	return os.Rename(backup, target)
 }
 
-// validateSource validates the repository and ref, rejecting "."/".." ref
-// segments so the constructed tarball URL cannot escape the /tarball/<ref> path.
+// validateSource validates the repository and ref, rejecting "."/".." segments
+// in both so the constructed tarball URL cannot escape the
+// /repos/<owner>/<repo>/tarball/<ref> path.
 func validateSource(repo, ref string) error {
 	if !repoRe.MatchString(repo) {
 		return fmt.Errorf("update: invalid manifests repository: %q", repo)
+	}
+	for _, seg := range strings.Split(repo, "/") {
+		if seg == "" || seg == "." || seg == ".." {
+			return fmt.Errorf("update: invalid manifests repository: %q", repo)
+		}
 	}
 	if !refRe.MatchString(ref) {
 		return fmt.Errorf("update: invalid manifests ref: %q", ref)
