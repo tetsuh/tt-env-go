@@ -1,0 +1,51 @@
+{
+  "release": "2026.05.16",
+  "description": "Tenstorrent proto sample stack 2026.05.16",
+  "components": {
+    "tt-kmd": "ttkmd-2.8.0",
+    "tt-smi": "v5.2.0",
+    "firmware": "v19.6.0",
+    "tt-metal": "v0.70.1"
+  },
+  "system_packages": {
+    "kmd": "2.8.0",
+    "smi": "5.0.1",
+    "flash": "3.6.5",
+    "topology": "1.2.19",
+    "metalium": "0.69.0~ubuntu24.04"
+  },
+  "python_packages": {
+    "tt-smi": "5.2.0",
+    "tt-umd": "0.9.5",
+    "textual": "0.59.0",
+    "elasticsearch": "8.11.0",
+    "tt-burnin": "0.4.0"
+  },
+  "git_components": {
+    "tt-studio": {
+      "url": "https://github.com/tenstorrent/tt-studio.git",
+      "version": "a6d347af3980540bb16d10ec473a6b09ce6f2138"
+    },
+    "tt-inference-server": {
+      "url": "https://github.com/tenstorrent/tt-inference-server.git",
+      "version": "cfa35731abe68484077d7b6337e7a11c4b2bdaa6"
+    }
+  },
+  "container_components": {
+    "tt-metalium": {
+      "ref": "tt-metalium-ubuntu24"
+    },
+    "tt-metalium-ubuntu22": {
+      "image_url": "ghcr.io/tenstorrent/tt-metal/tt-metalium-ubuntu-22.04-release-amd64",
+      "image_tag": "sha256:6150fb8c1ff468b015d5ff4fd866b4f7253273b68918b72f5ede135313a976bb"
+    },
+    "tt-metalium-ubuntu24": {
+      "image_url": "ghcr.io/tenstorrent/tt-metal/tt-metalium-ubuntu-24.04-release-amd64",
+      "image_tag": "sha256:ead7b800bdb6bebb9425c377222314447c5b2052f6e8b1e3c9caa1818cb7d8c4"
+    },
+    "tt-metalium-models": {
+      "image_url": "ghcr.io/tenstorrent/tt-metal/tt-metalium-ubuntu-22.04-release-models-amd64",
+      "image_tag": "sha256:02151bea82bc345afe6171b72d9232332d90699f550e6c5b35a645fa19569b3e"
+    }
+  }
+}
