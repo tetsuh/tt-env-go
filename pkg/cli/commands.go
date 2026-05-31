@@ -12,8 +12,8 @@ var removeCmd = &cobra.Command{
 	Short: "Remove a specific Tenstorrent stack release",
 	Long:  `Uninstalls all local components and shims for a specific release.`,
 	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		slog.Info("Running remove command", slog.String("release", args[0]))
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runRemove(cmd, args[0])
 	},
 }
 

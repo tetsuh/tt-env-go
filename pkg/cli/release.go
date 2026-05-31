@@ -29,6 +29,16 @@ func runUse(cmd *cobra.Command, release string) error {
 	return nil
 }
 
+// runRemove uninstalls a release and clears the active symlink when needed.
+func runRemove(cmd *cobra.Command, release string) error {
+	inst := &version.Installer{Root: ttHome()}
+	if err := inst.Remove(release); err != nil {
+		return err
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Removed release %s.\n", release)
+	return nil
+}
+
 // runList prints the release catalog, marking each release installed or
 // available, mirroring proto1 list_releases.
 func runList(cmd *cobra.Command) error {

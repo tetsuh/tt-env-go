@@ -61,6 +61,33 @@ func TestUseCommandRejectsUninstalledRelease(t *testing.T) {
 	}
 }
 
+func TestRemoveCommandUninstallsRelease(t *testing.T) {
+	root := t.TempDir()
+	installRelease(t, root, "2026.05.16")
+	t.Setenv("TT_HOME", root)
+
+	buf := new(bytes.Buffer)
+	removeCmd.SetOut(buf)
+	t.Cleanup(func() { removeCmd.SetOut(nil) })
+
+	if err := runRemove(removeCmd, "2026.05.16"); err != nil {
+		t.Fatalf("runRemove() error = %v", err)
+	}
+	if !strings.Contains(buf.String(), "Removed release 2026.05.16.") {
+		t.Errorf("unexpected output: %q", buf.String())
+	}
+	if (&version.Installer{Root: root}).IsInstalled("2026.05.16") {
+		t.Error("release should be uninstalled after remove command")
+	}
+}
+
+func TestRemoveCommandRejectsUninstalledRelease(t *testing.T) {
+	t.Setenv("TT_HOME", t.TempDir())
+	if err := runRemove(removeCmd, "2026.05.16"); err == nil {
+		t.Error("expected error removing an uninstalled release")
+	}
+}
+
 func TestListCommandMarksInstalledAndAvailable(t *testing.T) {
 	root := t.TempDir()
 	installRelease(t, root, "2026.04.01") // installed
@@ -151,6 +178,15 @@ func TestUseAndListCommandArgs(t *testing.T) {
 	}
 	if err := listCmd.Args(listCmd, []string{"extra"}); err == nil {
 		t.Error("expected list to reject positional arguments")
+	}
+	if removeCmd.Args == nil {
+		t.Fatal("remove command must declare an Args validator")
+	}
+	if err := removeCmd.Args(removeCmd, []string{}); err == nil {
+		t.Error("expected remove to reject zero arguments")
+	}
+	if err := removeCmd.Args(removeCmd, []string{"a", "b"}); err == nil {
+		t.Error("expected remove to reject two arguments")
 	}
 }
 
