@@ -468,11 +468,14 @@ func TestInstallLatestOmitsUndeclaredOptionalPackage(t *testing.T) {
 	if _, err := orch.Install(context.Background(), "2026.09.02", Options{Latest: true, Base: "2026.09.01"}); err != nil {
 		t.Fatalf("Install --latest: %v", err)
 	}
-	if contains(installSpecs(runner), "tt-metalium") {
-		t.Errorf("optional package omitted in base must not be installed in --latest mode; specs: %v", installSpecs(runner))
+	specs := installSpecs(runner)
+	for _, s := range specs {
+		if s == "tt-metalium" || strings.HasPrefix(s, "tt-metalium=") {
+			t.Errorf("optional package omitted in base must not be installed in --latest mode; specs: %v", specs)
+		}
 	}
 	// Required build packages are still installed unpinned.
-	if !contains(installSpecs(runner), "cmake") {
-		t.Errorf("expected required package cmake in specs: %v", installSpecs(runner))
+	if !contains(specs, "cmake") {
+		t.Errorf("expected required package cmake in specs: %v", specs)
 	}
 }
