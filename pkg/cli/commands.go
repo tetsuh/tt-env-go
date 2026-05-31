@@ -1,8 +1,6 @@
 package cli
 
 import (
-	"log/slog"
-
 	"github.com/spf13/cobra"
 )
 
@@ -50,13 +48,17 @@ var statusCmd = &cobra.Command{
 	},
 }
 
+// updateSelf backs the update command's --self flag.
+var updateSelf bool
+
 // updateCmd represents the update command
 var updateCmd = &cobra.Command{
 	Use:   "update",
 	Short: "Update release manifest catalogs",
 	Long:  `Fetches and updates the local cache of Tenstorrent stack release manifests from the remote repository.`,
-	Run: func(cmd *cobra.Command, args []string) {
-		slog.Info("Running update command")
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runUpdate(cmd, updateSelf)
 	},
 }
 
@@ -72,6 +74,9 @@ var diffCmd = &cobra.Command{
 }
 
 func init() {
+	updateCmd.Flags().BoolVar(&updateSelf, "self", false,
+		"Attempt to update the tt-env binary itself (not supported in the Go build)")
+
 	RootCmd.AddCommand(removeCmd)
 	RootCmd.AddCommand(useCmd)
 	RootCmd.AddCommand(listCmd)
