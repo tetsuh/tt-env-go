@@ -171,7 +171,7 @@ func (c *Capturer) Capture(ctx context.Context, release string, opts Options) (R
 
 	captured := &manifest.Manifest{
 		Release:             release,
-		Description:         fmt.Sprintf("Local-only Tenstorrent stack snapshot %s, captured from %s", release, baseRelease),
+		Description:         captureDescription(release, baseRelease, probeRelease),
 		Components:          buildComponents(baseManifest, systemPackages, pythonPackages),
 		SystemPackages:      systemPackages,
 		PythonPackages:      pythonPackages,
@@ -199,6 +199,16 @@ func (c *Capturer) Capture(ctx context.Context, release string, opts Options) (R
 	result.Written = true
 	c.logf("Captured local release manifest: %s", target)
 	return result, nil
+}
+
+// captureDescription renders the manifest description, noting the structure
+// (base) release and, when it differs, the release tree the versions were
+// probed from.
+func captureDescription(release, baseRelease, probeRelease string) string {
+	if probeRelease != "" && probeRelease != baseRelease {
+		return fmt.Sprintf("Local-only Tenstorrent stack snapshot %s, structured from %s, versions probed from %s", release, baseRelease, probeRelease)
+	}
+	return fmt.Sprintf("Local-only Tenstorrent stack snapshot %s, captured from %s", release, baseRelease)
 }
 
 // resolveBase determines the base release (whose manifest structure seeds the

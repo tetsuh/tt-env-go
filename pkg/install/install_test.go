@@ -451,3 +451,28 @@ func TestInstallLatestRejectsMismatchedBaseManifest(t *testing.T) {
 		t.Fatal("expected error for mismatched base manifest release")
 	}
 }
+
+func TestInstallLatestOmitsUndeclaredOptionalPackage(t *testing.T) {
+	root, osRelease := setupRoot(t)
+	// Base manifest omits the optional "metalium" system package.
+	noMetalium := strings.Replace(testStackManifest, `,
+    "metalium": "5.0.0"`, ``, 1)
+	if noMetalium == testStackManifest {
+		t.Fatal("test fixture not modified; metalium line not found")
+	}
+	mustWrite(t, filepath.Join(root, "releases", "2026.09.01.json"),
+		strings.Replace(noMetalium, `"release": "2026.05.16"`, `"release": "2026.09.01"`, 1))
+	runner := latestAwareRunner()
+	orch := &Orchestrator{Root: root, Runner: runner, OSReleasePath: osRelease, Logf: func(string, ...any) {}}
+
+	if _, err := orch.Install(context.Background(), "2026.09.02", Options{Latest: true, Base: "2026.09.01"}); err != nil {
+		t.Fatalf("Install --latest: %v", err)
+	}
+	if contains(installSpecs(runner), "tt-metalium") {
+		t.Errorf("optional package omitted in base must not be installed in --latest mode; specs: %v", installSpecs(runner))
+	}
+	// Required build packages are still installed unpinned.
+	if !contains(installSpecs(runner), "cmake") {
+		t.Errorf("expected required package cmake in specs: %v", installSpecs(runner))
+	}
+}

@@ -25,8 +25,16 @@ func resolveSystemPackages(osm *manifest.OSManifest, m *manifest.Manifest, lates
 
 		// In --latest mode versions are intentionally unpinned so apt/dnf
 		// installs the candidate (latest) version; the exact installed version
-		// is recorded afterwards by capturing the environment.
+		// is recorded afterwards by capturing the environment. Optional packages
+		// still follow the base manifest structure: an optional package that the
+		// base does not declare is omitted so --latest does not pull in
+		// unintended system dependencies.
 		if latest {
+			if optionalVirtualPackages[virtual] {
+				if _, declared := m.SystemPackages[virtual]; !declared {
+					continue
+				}
+			}
 			pkgs = append(pkgs, packagemanager.Package{Name: concrete})
 			continue
 		}

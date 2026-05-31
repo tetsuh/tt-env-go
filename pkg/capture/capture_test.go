@@ -422,3 +422,32 @@ func TestCaptureFromRequiresInstalledProbe(t *testing.T) {
 		t.Fatal("expected error for an uninstalled probe release")
 	}
 }
+
+func TestCaptureFromDescriptionNotesProbeProvenance(t *testing.T) {
+	root, osRelease := setupRoot(t)
+	c := newCapturer(t, root, osRelease)
+
+	const probeRelease = "2026.06.02"
+	probeDir := filepath.Join(root, "versions", probeRelease)
+	mustWrite(t, filepath.Join(probeDir, ".tt-env-installed"), `{}`)
+	mustWrite(t, filepath.Join(probeDir, "venv", "bin", "python"), "#!/bin/sh\n")
+	for name := range installedGitHeads {
+		mustWrite(t, filepath.Join(probeDir, "src", name, ".git", "HEAD"), "ref: refs/heads/main\n")
+	}
+
+	res, err := c.Capture(context.Background(), "2026.06.05", Options{
+		Base:         baseRelease,
+		ProbeRelease: probeRelease,
+		DryRun:       true,
+	})
+	if err != nil {
+		t.Fatalf("Capture --from: %v", err)
+	}
+	var m manifest.Manifest
+	if err := json.Unmarshal(res.ManifestJSON, &m); err != nil {
+		t.Fatalf("rendered manifest invalid: %v", err)
+	}
+	if !strings.Contains(m.Description, probeRelease) || !strings.Contains(m.Description, baseRelease) {
+		t.Errorf("description should mention base %q and probe %q, got %q", baseRelease, probeRelease, m.Description)
+	}
+}
