@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`update`** now fetches manifests from the official public
+  `tetsuh/tt-env-manifests` catalog by default instead of the prototype catalog.
+
 ## [0.1.0]
 
 First tagged release of `tt-env-go`, a statically compiled Go re-implementation

@@ -19,10 +19,10 @@ import (
 	"time"
 )
 
-// DefaultRepo and DefaultRef are the manifest source used when the Updater does
-// not override them, mirroring proto1 defaults.
+// DefaultRepo and DefaultRef identify the official public manifest catalog
+// used when the Updater does not override its source.
 const (
-	DefaultRepo = "tetsuh/tt-env-manifests-proto1"
+	DefaultRepo = "tetsuh/tt-env-manifests"
 	DefaultRef  = "main"
 )
 
