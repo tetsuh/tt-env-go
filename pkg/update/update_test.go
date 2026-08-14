@@ -57,6 +57,15 @@ func (f *fakeFetcher) Fetch(_ context.Context, repo, ref, token string) ([]byte,
 	return f.archive, nil
 }
 
+func TestDefaultSourceIsOfficialCatalog(t *testing.T) {
+	if DefaultRepo != "tetsuh/tt-env-manifests" {
+		t.Errorf("DefaultRepo = %q, want official catalog", DefaultRepo)
+	}
+	if DefaultRef != "main" {
+		t.Errorf("DefaultRef = %q, want main", DefaultRef)
+	}
+}
+
 func TestUpdateRefreshesManifests(t *testing.T) {
 	root := t.TempDir()
 	// Pre-existing stale release that must be replaced.
