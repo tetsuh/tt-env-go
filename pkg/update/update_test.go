@@ -133,6 +133,22 @@ func TestUpdateRefreshesManifests(t *testing.T) {
 	}
 }
 
+// fetchCatalog runs an update whose archive carries the given release
+// manifests and a single OS manifest, returning the update result.
+func fetchCatalog(t *testing.T, root string, releases map[string]string) Result {
+	t.Helper()
+	entries := map[string]string{"src-abc123/manifests/os.env": "ID=ubuntu\n"}
+	for name, body := range releases {
+		entries["src-abc123/releases/"+name] = body
+	}
+	u := &Updater{Root: root, Token: "tok", Fetcher: &fakeFetcher{archive: makeArchive(t, entries)}}
+	res, err := u.Update(context.Background())
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	return res
+}
+
 func TestUpdateMigratesCapturedManifest(t *testing.T) {
 	root := t.TempDir()
 	// A locally captured manifest predating the releases.local/ split sits in
@@ -145,15 +161,7 @@ func TestUpdateMigratesCapturedManifest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	archive := makeArchive(t, map[string]string{
-		"src-abc123/releases/a.json":  `{"release":"a"}`,
-		"src-abc123/manifests/os.env": "ID=ubuntu\n",
-	})
-	u := &Updater{Root: root, Token: "tok", Fetcher: &fakeFetcher{archive: archive}}
-
-	if _, err := u.Update(context.Background()); err != nil {
-		t.Fatalf("Update() error = %v", err)
-	}
+	fetchCatalog(t, root, map[string]string{"a.json": `{"release":"a"}`})
 	data, err := os.ReadFile(filepath.Join(root, "releases.local", "2026.05.16.json"))
 	if err != nil {
 		t.Fatalf("captured manifest should survive update in releases.local/: %v", err)
@@ -175,16 +183,7 @@ func TestUpdateReplacesFetchedManifest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	archive := makeArchive(t, map[string]string{
-		"src-abc123/releases/a.json":  `{"release":"a"}`,
-		"src-abc123/manifests/os.env": "ID=ubuntu\n",
-	})
-	u := &Updater{Root: root, Token: "tok", Fetcher: &fakeFetcher{archive: archive}}
-
-	res, err := u.Update(context.Background())
-	if err != nil {
-		t.Fatalf("Update() error = %v", err)
-	}
+	res := fetchCatalog(t, root, map[string]string{"a.json": `{"release":"a"}`})
 	if len(res.Migrated) != 0 {
 		t.Errorf("Migrated = %v, want empty for a fetched name", res.Migrated)
 	}
@@ -213,15 +212,7 @@ func TestUpdatePreservesConflictingLocalFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	archive := makeArchive(t, map[string]string{
-		"src-abc123/releases/a.json":  `{"release":"a"}`,
-		"src-abc123/manifests/os.env": "ID=ubuntu\n",
-	})
-	u := &Updater{Root: root, Token: "tok", Fetcher: &fakeFetcher{archive: archive}}
-
-	if _, err := u.Update(context.Background()); err != nil {
-		t.Fatalf("Update() error = %v", err)
-	}
+	fetchCatalog(t, root, map[string]string{"a.json": `{"release":"a"}`})
 	if data, err := os.ReadFile(filepath.Join(root, "releases.local", "x.json")); err != nil || string(data) != "kept local copy" {
 		t.Errorf("existing local file must be kept, data=%q err=%v", data, err)
 	}
@@ -245,15 +236,7 @@ func TestUpdateDropsDuplicateLocalFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	archive := makeArchive(t, map[string]string{
-		"src-abc123/releases/a.json":  `{"release":"a"}`,
-		"src-abc123/manifests/os.env": "ID=ubuntu\n",
-	})
-	u := &Updater{Root: root, Token: "tok", Fetcher: &fakeFetcher{archive: archive}}
-
-	if _, err := u.Update(context.Background()); err != nil {
-		t.Fatalf("Update() error = %v", err)
-	}
+	fetchCatalog(t, root, map[string]string{"a.json": `{"release":"a"}`})
 	if data, err := os.ReadFile(filepath.Join(root, "releases.local", "x.json")); err != nil || string(data) != "same" {
 		t.Errorf("local copy must be kept, data=%q err=%v", data, err)
 	}
