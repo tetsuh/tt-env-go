@@ -28,6 +28,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tetsuh/tt-env-go/pkg/catalog"
 	"github.com/tetsuh/tt-env-go/pkg/manifest"
 	packagemanager "github.com/tetsuh/tt-env-go/pkg/package_manager"
 	"github.com/tetsuh/tt-env-go/pkg/stackpolicy"
@@ -165,10 +166,16 @@ func (c *Capturer) Capture(ctx context.Context, release string, opts Options) (R
 	}
 
 	inst := &version.Installer{Root: c.Root}
-	target := filepath.Join(c.Root, "releases", release+".json")
+	// Local-only manifests live outside the catalog cache so "tt-env update"
+	// cannot delete them; capture refuses to shadow an existing manifest
+	// (local or catalog) without --force.
+	target := filepath.Join(catalog.LocalDir(c.Root), release+".json")
 	if !opts.DryRun && !opts.Force {
 		if _, err := os.Stat(target); err == nil {
-			return Result{}, fmt.Errorf("capture: release manifest already exists: %s (use --force to overwrite)", target)
+			return Result{}, fmt.Errorf("capture: local release manifest already exists: %s (use --force to overwrite)", target)
+		}
+		if _, err := os.Stat(filepath.Join(catalog.CatalogDir(c.Root), release+".json")); err == nil {
+			return Result{}, fmt.Errorf("capture: catalog already defines release %s; a local manifest would shadow it (use --force to capture anyway)", release)
 		}
 	}
 
@@ -232,6 +239,9 @@ func (c *Capturer) Capture(ctx context.Context, release string, opts Options) (R
 	}
 	result.Written = true
 	c.logf("Captured local release manifest: %s", target)
+	if _, err := os.Stat(filepath.Join(catalog.CatalogDir(c.Root), release+".json")); err == nil {
+		c.logf("Local manifest %s overrides the catalog manifest for release %s", target, release)
+	}
 	return result, nil
 }
 
@@ -274,7 +284,11 @@ func (c *Capturer) resolveBase(release, requested, requestedProbe string, inst *
 		return "", "", nil, fmt.Errorf("capture: probe release %s is not installed at %s; capture reads installed versions", probe, inst.ReleaseDir(probe))
 	}
 
-	baseManifest, err := manifest.Load(filepath.Join(c.Root, "releases", base+".json"))
+	basePath, _, err := catalog.Path(c.Root, base)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("capture: load base manifest: %w", err)
+	}
+	baseManifest, err := manifest.Load(basePath)
 	if err != nil {
 		return "", "", nil, fmt.Errorf("capture: load base manifest: %w", err)
 	}
@@ -282,23 +296,17 @@ func (c *Capturer) resolveBase(release, requested, requestedProbe string, inst *
 }
 
 // latestInstalledBase returns the lexicographically latest dated release that is
-// installed and is not the capture target. Dated names sort chronologically.
+// installed and is not the capture target, searching both the local manifest
+// directory and the catalog cache. Dated names sort chronologically.
 func (c *Capturer) latestInstalledBase(release string, inst *version.Installer) (string, error) {
-	entries, err := os.ReadDir(filepath.Join(c.Root, "releases"))
-	if err != nil {
-		return "", fmt.Errorf("capture: read releases directory: %w", err)
-	}
+	entries, _ := catalog.Available(c.Root)
 	var candidates []string
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+	for _, e := range entries {
+		if e.Release == release || !datedReleaseRe.MatchString(e.Release) {
 			continue
 		}
-		name := strings.TrimSuffix(entry.Name(), ".json")
-		if name == release || !datedReleaseRe.MatchString(name) {
-			continue
-		}
-		if inst.IsInstalled(name) {
-			candidates = append(candidates, name)
+		if inst.IsInstalled(e.Release) {
+			candidates = append(candidates, e.Release)
 		}
 	}
 	if len(candidates) == 0 {

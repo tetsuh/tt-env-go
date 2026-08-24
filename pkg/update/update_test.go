@@ -110,8 +110,13 @@ func TestUpdateRefreshesManifests(t *testing.T) {
 			t.Errorf("expected %s present: %v", rel, err)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(root, "releases", "old.json")); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("stale release should be gone, stat err = %v", err)
+	// old.json is not carried by the fetched catalog: it must be migrated to
+	// releases.local/ instead of deleted by the swap.
+	if _, err := os.Stat(filepath.Join(root, "releases.local", "old.json")); err != nil {
+		t.Errorf("expected old.json migrated to releases.local/: %v", err)
+	}
+	if res.Migrated == nil || len(res.Migrated) != 1 || res.Migrated[0] != "old.json" {
+		t.Errorf("Migrated = %v, want [old.json]", res.Migrated)
 	}
 	if _, err := os.Stat(filepath.Join(root, "releases", "sub")); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("nested entry should not be extracted, stat err = %v", err)
@@ -125,6 +130,135 @@ func TestUpdateRefreshesManifests(t *testing.T) {
 	}
 	if got := string(bytes.TrimSpace(marker)); got != "1700000000" {
 		t.Errorf("marker = %q, want 1700000000", got)
+	}
+}
+
+func TestUpdateMigratesCapturedManifest(t *testing.T) {
+	root := t.TempDir()
+	// A locally captured manifest predating the releases.local/ split sits in
+	// the catalog cache and is not part of the fetched catalog.
+	const captured = `{"release":"2026.05.16","description":"local capture"}`
+	if err := os.MkdirAll(filepath.Join(root, "releases"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "releases", "2026.05.16.json"), []byte(captured), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	archive := makeArchive(t, map[string]string{
+		"src-abc123/releases/a.json":  `{"release":"a"}`,
+		"src-abc123/manifests/os.env": "ID=ubuntu\n",
+	})
+	u := &Updater{Root: root, Token: "tok", Fetcher: &fakeFetcher{archive: archive}}
+
+	if _, err := u.Update(context.Background()); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "releases.local", "2026.05.16.json"))
+	if err != nil {
+		t.Fatalf("captured manifest should survive update in releases.local/: %v", err)
+	}
+	if string(data) != captured {
+		t.Errorf("migrated manifest content changed: %q", data)
+	}
+	if _, err := os.Stat(filepath.Join(root, "releases", "2026.05.16.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("releases/ should hold only fetched manifests, stat err = %v", err)
+	}
+}
+
+func TestUpdateReplacesFetchedManifest(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "releases"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "releases", "a.json"), []byte(`stale`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	archive := makeArchive(t, map[string]string{
+		"src-abc123/releases/a.json":  `{"release":"a"}`,
+		"src-abc123/manifests/os.env": "ID=ubuntu\n",
+	})
+	u := &Updater{Root: root, Token: "tok", Fetcher: &fakeFetcher{archive: archive}}
+
+	res, err := u.Update(context.Background())
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if len(res.Migrated) != 0 {
+		t.Errorf("Migrated = %v, want empty for a fetched name", res.Migrated)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "releases", "a.json"))
+	if err != nil {
+		t.Fatalf("read a.json: %v", err)
+	}
+	if string(data) != `{"release":"a"}` {
+		t.Errorf("a.json = %q, want the fetched content", data)
+	}
+}
+
+func TestUpdatePreservesConflictingLocalFile(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "releases"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "releases.local"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The same non-catalog name exists on both sides with different content.
+	if err := os.WriteFile(filepath.Join(root, "releases", "x.json"), []byte("old copy"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "releases.local", "x.json"), []byte("kept local copy"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	archive := makeArchive(t, map[string]string{
+		"src-abc123/releases/a.json":  `{"release":"a"}`,
+		"src-abc123/manifests/os.env": "ID=ubuntu\n",
+	})
+	u := &Updater{Root: root, Token: "tok", Fetcher: &fakeFetcher{archive: archive}}
+
+	if _, err := u.Update(context.Background()); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(root, "releases.local", "x.json")); err != nil || string(data) != "kept local copy" {
+		t.Errorf("existing local file must be kept, data=%q err=%v", data, err)
+	}
+	if data, err := os.ReadFile(filepath.Join(root, "releases.local", "conflicts", "x.json")); err != nil || string(data) != "old copy" {
+		t.Errorf("conflicting copy must be preserved under conflicts/, data=%q err=%v", data, err)
+	}
+}
+
+func TestUpdateDropsDuplicateLocalFile(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "releases"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "releases.local"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "releases", "x.json"), []byte("same"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "releases.local", "x.json"), []byte("same"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	archive := makeArchive(t, map[string]string{
+		"src-abc123/releases/a.json":  `{"release":"a"}`,
+		"src-abc123/manifests/os.env": "ID=ubuntu\n",
+	})
+	u := &Updater{Root: root, Token: "tok", Fetcher: &fakeFetcher{archive: archive}}
+
+	if _, err := u.Update(context.Background()); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(root, "releases.local", "x.json")); err != nil || string(data) != "same" {
+		t.Errorf("local copy must be kept, data=%q err=%v", data, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "releases.local", "conflicts")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("identical duplicate must be dropped, not archived: %v", err)
 	}
 }
 

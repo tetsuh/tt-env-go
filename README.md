@@ -28,6 +28,7 @@ tt-env-go/
     ├── logger/          # Structured logging (slog)
     ├── buildinfo/       # Build version metadata (set via -ldflags)
     ├── manifest/        # Release JSON schema & OS parsing
+    ├── catalog/         # Catalog vs. local manifest lookup (releases.local/)
     ├── package_manager/ # Apt / Dnf adapters
     ├── version/         # Stack release install / use / list / remove
     ├── shims/           # Wrapper & shim generator
@@ -43,6 +44,20 @@ Requires Go 1.23 or newer.
 go build ./...          # build all packages
 go build -o tt-env ./cmd/tt-env
 ```
+
+## Manifest locations
+
+`tt-env` keeps release manifests in two places under `TT_HOME`:
+
+- `releases/` — the catalog cache fetched by `tt-env update`, replaced
+  wholesale on every update.
+- `releases.local/` — user-authored local manifests (e.g. `tt-env capture`),
+  never touched by `tt-env update`.
+
+Manifest lookups (`install`, `capture --base`, `diff`, `list`) search both
+locations; a local manifest overrides a catalog manifest with the same release
+name. `tt-env update` moves any file in `releases/` that the fetched catalog
+does not carry into `releases.local/` instead of deleting it.
 
 ## Releases
 
