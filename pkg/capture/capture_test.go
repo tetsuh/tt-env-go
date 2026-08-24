@@ -244,6 +244,39 @@ func TestCaptureCatalogNameRequiresForce(t *testing.T) {
 	}
 }
 
+func TestWriteManifestAtomicallyDoesNotReplaceExistingTarget(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "releases.local", "x.json")
+	mustWrite(t, target, "original")
+
+	// A target created after the preflight check must survive a non-forced
+	// capture (regression for the TOCTOU between check and publication).
+	if err := writeManifestAtomically(target, []byte("clobber"), false); err == nil {
+		t.Fatal("expected error when the target exists and replace is false")
+	}
+	if data, err := os.ReadFile(target); err != nil || string(data) != "original" {
+		t.Errorf("existing target must be preserved, data=%q err=%v", data, err)
+	}
+	if err := writeManifestAtomically(target, []byte("replaced"), true); err != nil {
+		t.Fatalf("forced replace: %v", err)
+	}
+	if data, err := os.ReadFile(target); err != nil || string(data) != "replaced" {
+		t.Errorf("forced target must be replaced, data=%q err=%v", data, err)
+	}
+	// No stray temp files may remain.
+	entries, err := os.ReadDir(filepath.Dir(target))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "x.json" {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("releases.local entries = %v, want [x.json]", names)
+	}
+}
+
 func TestCaptureRequiresInstalledBase(t *testing.T) {
 	root, osRelease := setupRoot(t)
 	c := newCapturer(t, root, osRelease)

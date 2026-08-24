@@ -51,8 +51,9 @@ go build -o tt-env ./cmd/tt-env
 
 - `releases/` — the catalog cache fetched by `tt-env update`, replaced
   wholesale on every update.
-- `releases.local/` — user-authored local manifests (e.g. `tt-env capture`),
-  never touched by `tt-env update`.
+- `releases.local/` — user-authored local manifests (e.g. `tt-env capture`).
+  `tt-env update` never replaces or deletes files here; it only adds migrated
+  manifests and archives conflicting copies under `releases.local/conflicts/`.
 
 Manifest lookups (`install`, `capture --base`, `diff`, `list`) search both
 locations; a local manifest overrides a catalog manifest with the same release

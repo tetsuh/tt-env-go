@@ -95,6 +95,44 @@ func TestAvailableMergesBothLocations(t *testing.T) {
 	}
 }
 
+func TestPathMatchesDeclaredReleaseNotFilename(t *testing.T) {
+	root := t.TempDir()
+	// A local manifest whose filename differs from its declared release.
+	mustWrite(t, filepath.Join(root, "releases.local", "alias.json"), `{"release":"0.76.0"}`)
+
+	path, local, err := Path(root, "0.76.0")
+	if err != nil {
+		t.Fatalf("Path() error = %v", err)
+	}
+	if !local || filepath.Base(path) != "alias.json" {
+		t.Errorf("Path() = %q local=%v, want alias.json local=true", path, local)
+	}
+}
+
+func TestPathSkipsInvalidLocalManifest(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "releases", "0.76.0.json"), `{"release":"0.76.0"}`)
+	// An invalid local manifest with the conventional name must not shadow
+	// the valid catalog manifest.
+	mustWrite(t, filepath.Join(root, "releases.local", "0.76.0.json"), `{invalid`)
+
+	path, local, err := Path(root, "0.76.0")
+	if err != nil {
+		t.Fatalf("Path() error = %v", err)
+	}
+	if local || filepath.Dir(path) != filepath.Join(root, "releases") {
+		t.Errorf("Path() = %q local=%v, want the catalog manifest", path, local)
+	}
+
+	entries, warnings := Available(root)
+	if len(entries) != 1 || entries[0] != (Entry{Release: "0.76.0"}) {
+		t.Errorf("Available() = %v, want the catalog entry only", entries)
+	}
+	if len(warnings) != 1 {
+		t.Errorf("warnings = %v, want the invalid local manifest", warnings)
+	}
+}
+
 func TestAvailableEmptyWhenDirectoriesMissing(t *testing.T) {
 	entries, warnings := Available(t.TempDir())
 	if len(entries) != 0 || len(warnings) != 0 {

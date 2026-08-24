@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `releases.local/`. Captured manifests are now written to `releases.local/`,
   and manifest lookups (`install`, `capture --base`, `diff`, `list`) prefer a
   local manifest over a catalog manifest with the same release name (`list`
-  marks such releases `[local]`).
+  includes `local` in the bracketed status).
 
 ## [0.1.1] - 2026-08-15
 

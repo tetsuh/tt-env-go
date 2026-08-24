@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -218,12 +219,16 @@ func TestUpdatePreservesConflictingLocalFile(t *testing.T) {
 	// The same non-catalog name exists on both sides with different content.
 	writeBothSides(t, root, "old copy", "kept local copy")
 
-	fetchCatalog(t, root, map[string]string{"a.json": `{"release":"a"}`})
+	res := fetchCatalog(t, root, map[string]string{"a.json": `{"release":"a"}`})
 	if data, err := os.ReadFile(filepath.Join(root, "releases.local", "x.json")); err != nil || string(data) != "kept local copy" {
 		t.Errorf("existing local file must be kept, data=%q err=%v", data, err)
 	}
 	if data, err := os.ReadFile(filepath.Join(root, "releases.local", "conflicts", "x.json")); err != nil || string(data) != "old copy" {
 		t.Errorf("conflicting copy must be preserved under conflicts/, data=%q err=%v", data, err)
+	}
+	// Archived conflicts count as migrated so the user hears a file was moved.
+	if len(res.Migrated) != 1 || res.Migrated[0] != "x.json" {
+		t.Errorf("Migrated = %v, want [x.json]", res.Migrated)
 	}
 }
 
@@ -231,12 +236,56 @@ func TestUpdateDropsDuplicateLocalFile(t *testing.T) {
 	root := t.TempDir()
 	writeBothSides(t, root, "same", "same")
 
-	fetchCatalog(t, root, map[string]string{"a.json": `{"release":"a"}`})
+	res := fetchCatalog(t, root, map[string]string{"a.json": `{"release":"a"}`})
 	if data, err := os.ReadFile(filepath.Join(root, "releases.local", "x.json")); err != nil || string(data) != "same" {
 		t.Errorf("local copy must be kept, data=%q err=%v", data, err)
 	}
 	if _, err := os.Stat(filepath.Join(root, "releases.local", "conflicts")); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("identical duplicate must be dropped, not archived: %v", err)
+	}
+	// Identical duplicates are removed, not reported as migrated.
+	if len(res.Migrated) != 0 {
+		t.Errorf("Migrated = %v, want empty for an identical duplicate", res.Migrated)
+	}
+}
+
+func TestUpdateHoldsLockAcrossMigration(t *testing.T) {
+	root := t.TempDir()
+	mkdirAll(t, filepath.Join(root, "releases"))
+	writeFile(t, filepath.Join(root, "releases", "captured.json"), `{"release":"captured"}`)
+
+	// A concurrently held lock must stop the update before the migration
+	// renames anything, so the loser reports the lock, not a missing file.
+	if err := os.MkdirAll(filepath.Join(root, ".tmp", "update.lock"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	u := &Updater{
+		Root:  root,
+		Token: "tok",
+		Fetcher: &fakeFetcher{archive: makeArchive(t, map[string]string{
+			"src/releases/a.json":  `{"release":"a"}`,
+			"src/manifests/os.env": "ID=ubuntu\n",
+		})},
+	}
+	_, err := u.Update(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "another update is already in progress") {
+		t.Fatalf("Update() error = %v, want lock error", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "releases", "captured.json")); err != nil {
+		t.Errorf("migration must not run without the lock: %v", err)
+	}
+}
+
+func TestUniquePathReturnsLstatError(t *testing.T) {
+	root := t.TempDir()
+	// A regular file where a directory is expected makes every Lstat fail
+	// with a non-ErrNotExist error, which must surface instead of looping.
+	blocker := filepath.Join(root, "blocker")
+	if err := os.WriteFile(blocker, []byte("file"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := uniquePath(filepath.Join(blocker, "subdir"), "x.json"); err == nil {
+		t.Fatal("uniquePath should surface unexpected Lstat errors")
 	}
 }
 

@@ -17,6 +17,7 @@ package capture
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -168,14 +169,17 @@ func (c *Capturer) Capture(ctx context.Context, release string, opts Options) (R
 	inst := &version.Installer{Root: c.Root}
 	// Local-only manifests live outside the catalog cache so "tt-env update"
 	// cannot delete them; capture refuses to shadow an existing manifest
-	// (local or catalog) without --force.
+	// (local or catalog) without --force, and non-forced publication never
+	// replaces a target created after this check.
 	target := filepath.Join(catalog.LocalDir(c.Root), release+".json")
-	if !opts.DryRun && !opts.Force {
-		if _, err := os.Stat(target); err == nil {
-			return Result{}, fmt.Errorf("capture: local release manifest already exists: %s (use --force to overwrite)", target)
-		}
-		if _, err := os.Stat(filepath.Join(catalog.CatalogDir(c.Root), release+".json")); err == nil {
-			return Result{}, fmt.Errorf("capture: catalog already defines release %s; a local manifest would shadow it (use --force to capture anyway)", release)
+	var catalogShadowed bool
+	if existing, local, err := catalog.Path(c.Root, release); err == nil {
+		catalogShadowed = !local
+		if !opts.DryRun && !opts.Force {
+			if local {
+				return Result{}, fmt.Errorf("capture: local release manifest already exists: %s (use --force to overwrite)", existing)
+			}
+			return Result{}, fmt.Errorf("capture: catalog already defines release %s (%s); a local manifest would shadow it (use --force to capture anyway)", release, existing)
 		}
 	}
 
@@ -234,12 +238,12 @@ func (c *Capturer) Capture(ctx context.Context, release string, opts Options) (R
 		return result, nil
 	}
 
-	if err := writeManifestAtomically(target, rendered); err != nil {
+	if err := writeManifestAtomically(target, rendered, opts.Force); err != nil {
 		return Result{}, err
 	}
 	result.Written = true
 	c.logf("Captured local release manifest: %s", target)
-	if _, err := os.Stat(filepath.Join(catalog.CatalogDir(c.Root), release+".json")); err == nil {
+	if catalogShadowed {
 		c.logf("Local manifest %s overrides the catalog manifest for release %s", target, release)
 	}
 	return result, nil
@@ -572,7 +576,10 @@ func buildComponents(base *manifest.Manifest, systemPackages, pythonPackages map
 
 // writeManifestAtomically writes data to target via a temp file in the same
 // directory followed by a rename, so a reader never sees a partial manifest.
-func writeManifestAtomically(target string, data []byte) error {
+// When replace is false the target is created with link(2), which fails
+// atomically if the target already exists, so a manifest created after the
+// caller's preflight check is never overwritten without --force.
+func writeManifestAtomically(target string, data []byte, replace bool) error {
 	dir := filepath.Dir(target)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("capture: create releases directory: %w", err)
@@ -595,7 +602,18 @@ func writeManifestAtomically(target string, data []byte) error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("capture: close temp manifest: %w", err)
 	}
-	if err := os.Rename(tmpName, target); err != nil {
+	if replace {
+		if err := os.Rename(tmpName, target); err != nil {
+			return fmt.Errorf("capture: write manifest %s: %w", target, err)
+		}
+		return nil
+	}
+	// link(2) fails atomically when the target exists, unlike rename(2),
+	// which would replace it.
+	if err := os.Link(tmpName, target); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("capture: release manifest already exists: %s (use --force to overwrite)", target)
+		}
 		return fmt.Errorf("capture: write manifest %s: %w", target, err)
 	}
 	return nil

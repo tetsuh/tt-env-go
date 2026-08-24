@@ -104,6 +104,15 @@ func (u *Updater) Update(ctx context.Context) (Result, error) {
 		return Result{}, err
 	}
 
+	// Acquire the update lock before migration: the migration renames cached
+	// files and must not race a concurrent update or the losing process sees
+	// missing-source errors. The lock is held through the catalog swap.
+	lock, err := u.acquireLock()
+	if err != nil {
+		return Result{}, err
+	}
+	defer os.Remove(lock)
+
 	// Move every file the fetched catalog does not carry out of releases/
 	// before the swap so the wholesale replacement cannot delete local
 	// manifests (data-loss bug #77).
@@ -132,22 +141,29 @@ func (u *Updater) now() time.Time {
 	return time.Now()
 }
 
-// apply stages the extracted manifests, writes the update marker, and swaps the
-// new directories into place under a per-process lock.
-func (u *Updater) apply(set *manifestSet) error {
+// acquireLock takes the per-process update lock under ${Root}/.tmp so
+// concurrent updates serialize instead of racing on the cache swap and the
+// local-manifest migration.
+func (u *Updater) acquireLock() (string, error) {
 	tmpRoot := filepath.Join(u.Root, ".tmp")
 	if err := os.MkdirAll(tmpRoot, 0o755); err != nil {
-		return fmt.Errorf("update: create temp directory: %w", err)
+		return "", fmt.Errorf("update: create temp directory: %w", err)
 	}
-
 	lock := filepath.Join(tmpRoot, "update.lock")
 	if err := os.Mkdir(lock, 0o700); err != nil {
 		if errors.Is(err, os.ErrExist) {
-			return fmt.Errorf("update: another update is already in progress (remove %s if you are sure none is running)", lock)
+			return "", fmt.Errorf("update: another update is already in progress (remove %s if you are sure none is running)", lock)
 		}
-		return fmt.Errorf("update: acquire update lock: %w", err)
+		return "", fmt.Errorf("update: acquire update lock: %w", err)
 	}
-	defer os.Remove(lock)
+	return lock, nil
+}
+
+// apply stages the extracted manifests, writes the update marker, and swaps
+// the new directories into place. The caller must already hold the update
+// lock.
+func (u *Updater) apply(set *manifestSet) error {
+	tmpRoot := filepath.Join(u.Root, ".tmp")
 
 	work, err := os.MkdirTemp(tmpRoot, "update-")
 	if err != nil {
@@ -202,8 +218,12 @@ func (u *Updater) migrateLocalManifests(fetched map[string][]byte) ([]string, er
 		src := filepath.Join(oldDir, entry.Name())
 		dst := filepath.Join(localDir, entry.Name())
 		if _, err := os.Lstat(dst); err == nil {
-			if err := preserveConflict(src, dst, localDir); err != nil {
+			archived, err := preserveConflict(src, dst, localDir)
+			if err != nil {
 				return migrated, fmt.Errorf("update: preserve %s: %w", src, err)
+			}
+			if archived {
+				migrated = append(migrated, entry.Name())
 			}
 			continue
 		}
@@ -219,30 +239,42 @@ func (u *Updater) migrateLocalManifests(fetched map[string][]byte) ([]string, er
 }
 
 // preserveConflict keeps the existing releases.local/ file when a non-catalog
-// file with the same name arrives: identical duplicates are dropped, and a
-// genuinely different file is moved into releases.local/conflicts/ so no bytes
-// are lost.
-func preserveConflict(src, dst, localDir string) error {
+// file with the same name arrives: identical duplicates are dropped (reported
+// as not archived), and a genuinely different file is moved into
+// releases.local/conflicts/ so no bytes are lost.
+func preserveConflict(src, dst, localDir string) (bool, error) {
 	srcData, srcErr := os.ReadFile(src)
 	dstData, dstErr := os.ReadFile(dst)
 	if srcErr == nil && dstErr == nil && bytes.Equal(srcData, dstData) {
-		return os.Remove(src) // duplicate of the preserved local file
+		return false, os.Remove(src) // duplicate of the preserved local file
 	}
 
 	conflicts := filepath.Join(localDir, "conflicts")
 	if err := os.MkdirAll(conflicts, 0o755); err != nil {
-		return fmt.Errorf("create %s: %w", conflicts, err)
+		return false, fmt.Errorf("create %s: %w", conflicts, err)
 	}
-	return os.Rename(src, uniquePath(conflicts, filepath.Base(src)))
+	target, err := uniquePath(conflicts, filepath.Base(src))
+	if err != nil {
+		return false, fmt.Errorf("pick archive path under %s: %w", conflicts, err)
+	}
+	if err := os.Rename(src, target); err != nil {
+		return false, fmt.Errorf("move %s to %s: %w", src, target, err)
+	}
+	return true, nil
 }
 
 // uniquePath returns dir/name, or dir/name.N for the first free suffix, so a
-// move never overwrites an existing file.
-func uniquePath(dir, name string) string {
+// move never overwrites an existing file. An unexpected Lstat error is
+// returned instead of retried.
+func uniquePath(dir, name string) (string, error) {
 	path := filepath.Join(dir, name)
 	for i := 1; ; i++ {
-		if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
-			return path
+		_, err := os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			return path, nil
+		}
+		if err != nil {
+			return "", err
 		}
 		path = filepath.Join(dir, fmt.Sprintf("%s.%d", name, i))
 	}
