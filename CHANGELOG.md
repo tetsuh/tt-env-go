@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`update`** no longer deletes locally captured release manifests: manifests
+  in `releases/` that the fetched catalog does not carry are moved to
+  `releases.local/`. Captured manifests are now written to `releases.local/`,
+  and manifest lookups (`install`, `capture --base`, `diff`, `list`) prefer a
+  local manifest over a catalog manifest with the same release name (`list`
+  includes `local` in the bracketed status).
+
 ## [0.1.1] - 2026-08-15
 
 ### Changed

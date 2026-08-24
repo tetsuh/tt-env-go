@@ -149,7 +149,7 @@ func TestCaptureDryRunProbesInstalledVersions(t *testing.T) {
 	if res.BaseRelease != baseRelease {
 		t.Errorf("base = %q, want %q", res.BaseRelease, baseRelease)
 	}
-	if _, err := os.Stat(filepath.Join(root, "releases", "2026.06.01.json")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(root, "releases.local", "2026.06.01.json")); !os.IsNotExist(err) {
 		t.Error("dry-run must not create the target manifest")
 	}
 
@@ -196,7 +196,7 @@ func TestCaptureWritesManifest(t *testing.T) {
 	if !res.Written {
 		t.Fatal("expected Written=true")
 	}
-	target := filepath.Join(root, "releases", "2026.06.01.json")
+	target := filepath.Join(root, "releases.local", "2026.06.01.json")
 	data, err := os.ReadFile(target)
 	if err != nil {
 		t.Fatalf("read written manifest: %v", err)
@@ -212,7 +212,7 @@ func TestCaptureWritesManifest(t *testing.T) {
 func TestCaptureExistingTargetRequiresForce(t *testing.T) {
 	root, osRelease := setupRoot(t)
 	c := newCapturer(t, root, osRelease)
-	mustWrite(t, filepath.Join(root, "releases", "2026.06.01.json"), `{"release":"x"}`)
+	mustWrite(t, filepath.Join(root, "releases.local", "2026.06.01.json"), `{"release":"x"}`)
 
 	if _, err := c.Capture(context.Background(), "2026.06.01", Options{}); err == nil {
 		t.Fatal("expected error when target exists without --force")
@@ -220,6 +220,60 @@ func TestCaptureExistingTargetRequiresForce(t *testing.T) {
 	// --force overwrites.
 	if _, err := c.Capture(context.Background(), "2026.06.01", Options{Force: true}); err != nil {
 		t.Fatalf("force overwrite: %v", err)
+	}
+}
+
+func TestCaptureCatalogNameRequiresForce(t *testing.T) {
+	root, osRelease := setupRoot(t)
+	c := newCapturer(t, root, osRelease)
+	// A catalog release with the target name must not be shadowed silently.
+	mustWrite(t, filepath.Join(root, "releases", "2026.06.01.json"), `{"release":"2026.06.01"}`)
+
+	if _, err := c.Capture(context.Background(), "2026.06.01", Options{}); err == nil {
+		t.Fatal("expected error when the catalog already defines the release")
+	}
+	res, err := c.Capture(context.Background(), "2026.06.01", Options{Force: true})
+	if err != nil {
+		t.Fatalf("force capture over a catalog name: %v", err)
+	}
+	if !res.Written {
+		t.Fatal("expected Written=true")
+	}
+	if _, err := os.Stat(filepath.Join(root, "releases.local", "2026.06.01.json")); err != nil {
+		t.Errorf("expected local manifest written: %v", err)
+	}
+}
+
+func TestWriteManifestAtomicallyDoesNotReplaceExistingTarget(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "releases.local", "x.json")
+	mustWrite(t, target, "original")
+
+	// A target created after the preflight check must survive a non-forced
+	// capture (regression for the TOCTOU between check and publication).
+	if err := writeManifestAtomically(target, []byte("clobber"), false); err == nil {
+		t.Fatal("expected error when the target exists and replace is false")
+	}
+	if data, err := os.ReadFile(target); err != nil || string(data) != "original" {
+		t.Errorf("existing target must be preserved, data=%q err=%v", data, err)
+	}
+	if err := writeManifestAtomically(target, []byte("replaced"), true); err != nil {
+		t.Fatalf("forced replace: %v", err)
+	}
+	if data, err := os.ReadFile(target); err != nil || string(data) != "replaced" {
+		t.Errorf("forced target must be replaced, data=%q err=%v", data, err)
+	}
+	// No stray temp files may remain.
+	entries, err := os.ReadDir(filepath.Dir(target))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "x.json" {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("releases.local entries = %v, want [x.json]", names)
 	}
 }
 
@@ -301,7 +355,9 @@ func TestCaptureRejectsNonAptManifest(t *testing.T) {
 // virtualenv python and git clones as the primary base fixture.
 func installBase(t *testing.T, root, release string) {
 	t.Helper()
-	mustWrite(t, filepath.Join(root, "releases", release+".json"), baseStackManifest)
+	// The manifest's release field must match its filename for catalog lookups.
+	m := strings.Replace(baseStackManifest, baseRelease, release, 1)
+	mustWrite(t, filepath.Join(root, "releases", release+".json"), m)
 	versionDir := filepath.Join(root, "versions", release)
 	mustWrite(t, filepath.Join(versionDir, ".tt-env-installed"), `{}`)
 	mustWrite(t, filepath.Join(versionDir, "venv", "bin", "python"), "#!/bin/sh\n")
@@ -315,7 +371,8 @@ func TestCaptureSelectsLatestInstalledNonTargetBase(t *testing.T) {
 	// A newer installed base must win over the older setupRoot base.
 	installBase(t, root, "2026.05.20")
 	// A still-newer manifest that is NOT installed must be ignored.
-	mustWrite(t, filepath.Join(root, "releases", "2026.05.25.json"), baseStackManifest)
+	mustWrite(t, filepath.Join(root, "releases", "2026.05.25.json"),
+		strings.Replace(baseStackManifest, baseRelease, "2026.05.25", 1))
 	c := newCapturer(t, root, osRelease)
 
 	res, err := c.Capture(context.Background(), "2026.06.01", Options{DryRun: true})

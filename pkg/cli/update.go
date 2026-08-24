@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/tetsuh/tt-env-go/pkg/catalog"
 	"github.com/tetsuh/tt-env-go/pkg/update"
 )
 
@@ -44,6 +45,10 @@ func runUpdate(cmd *cobra.Command, self bool) error {
 
 	fmt.Fprintf(cmd.OutOrStdout(), "Updated %d release manifest(s) from %s@%s.\n",
 		res.ReleaseCount, res.Repo, res.Ref)
+	if len(res.Migrated) > 0 {
+		fmt.Fprintf(cmd.OutOrStdout(), "Migrated %d manifest(s) not in the catalog to %s/.\n",
+			len(res.Migrated), catalog.LocalDirName)
+	}
 	return nil
 }
 

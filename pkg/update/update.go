@@ -8,6 +8,7 @@
 package update
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -17,6 +18,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/tetsuh/tt-env-go/pkg/catalog"
 )
 
 // DefaultRepo and DefaultRef identify the official public manifest catalog
@@ -60,6 +63,10 @@ type Result struct {
 	Ref             string
 	ReleaseCount    int
 	OSManifestCount int
+	// Migrated lists files moved from releases/ to releases.local/ because the
+	// fetched catalog does not carry them (previously such files were deleted
+	// by the swap).
+	Migrated []string
 }
 
 // Update fetches the manifest archive and atomically replaces the local
@@ -97,6 +104,23 @@ func (u *Updater) Update(ctx context.Context) (Result, error) {
 		return Result{}, err
 	}
 
+	// Acquire the update lock before migration: the migration renames cached
+	// files and must not race a concurrent update or the losing process sees
+	// missing-source errors. The lock is held through the catalog swap.
+	lock, err := u.acquireLock()
+	if err != nil {
+		return Result{}, err
+	}
+	defer os.Remove(lock)
+
+	// Move every file the fetched catalog does not carry out of releases/
+	// before the swap so the wholesale replacement cannot delete local
+	// manifests (data-loss bug #77).
+	migrated, err := u.migrateLocalManifests(set.releases)
+	if err != nil {
+		return Result{}, err
+	}
+
 	if err := u.apply(set); err != nil {
 		return Result{}, err
 	}
@@ -106,6 +130,7 @@ func (u *Updater) Update(ctx context.Context) (Result, error) {
 		Ref:             ref,
 		ReleaseCount:    len(set.releases),
 		OSManifestCount: len(set.osManifests),
+		Migrated:        migrated,
 	}, nil
 }
 
@@ -116,22 +141,29 @@ func (u *Updater) now() time.Time {
 	return time.Now()
 }
 
-// apply stages the extracted manifests, writes the update marker, and swaps the
-// new directories into place under a per-process lock.
-func (u *Updater) apply(set *manifestSet) error {
+// acquireLock takes the per-process update lock under ${Root}/.tmp so
+// concurrent updates serialize instead of racing on the cache swap and the
+// local-manifest migration.
+func (u *Updater) acquireLock() (string, error) {
 	tmpRoot := filepath.Join(u.Root, ".tmp")
 	if err := os.MkdirAll(tmpRoot, 0o755); err != nil {
-		return fmt.Errorf("update: create temp directory: %w", err)
+		return "", fmt.Errorf("update: create temp directory: %w", err)
 	}
-
 	lock := filepath.Join(tmpRoot, "update.lock")
 	if err := os.Mkdir(lock, 0o700); err != nil {
 		if errors.Is(err, os.ErrExist) {
-			return fmt.Errorf("update: another update is already in progress (remove %s if you are sure none is running)", lock)
+			return "", fmt.Errorf("update: another update is already in progress (remove %s if you are sure none is running)", lock)
 		}
-		return fmt.Errorf("update: acquire update lock: %w", err)
+		return "", fmt.Errorf("update: acquire update lock: %w", err)
 	}
-	defer os.Remove(lock)
+	return lock, nil
+}
+
+// apply stages the extracted manifests, writes the update marker, and swaps
+// the new directories into place. The caller must already hold the update
+// lock.
+func (u *Updater) apply(set *manifestSet) error {
+	tmpRoot := filepath.Join(u.Root, ".tmp")
 
 	work, err := os.MkdirTemp(tmpRoot, "update-")
 	if err != nil {
@@ -160,6 +192,92 @@ func (u *Updater) apply(set *manifestSet) error {
 		return fmt.Errorf("update: create backup directory: %w", err)
 	}
 	return u.swap(stagingReleases, stagingManifests, backup)
+}
+
+// migrateLocalManifests moves every entry under the existing releases/ cache
+// that the fetched catalog does not carry into releases.local/, so the swap
+// below never deletes a file update did not fetch. A name that already exists
+// in releases.local/ is kept there: an identical duplicate is dropped, and a
+// conflicting file is preserved under releases.local/conflicts/.
+func (u *Updater) migrateLocalManifests(fetched map[string][]byte) ([]string, error) {
+	oldDir := catalog.CatalogDir(u.Root)
+	entries, err := os.ReadDir(oldDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("update: read existing releases: %w", err)
+	}
+
+	localDir := catalog.LocalDir(u.Root)
+	var migrated []string
+	for _, entry := range entries {
+		if _, ok := fetched[entry.Name()]; ok {
+			continue // the fetched catalog owns this name
+		}
+		src := filepath.Join(oldDir, entry.Name())
+		dst := filepath.Join(localDir, entry.Name())
+		if _, err := os.Lstat(dst); err == nil {
+			archived, err := preserveConflict(src, dst, localDir)
+			if err != nil {
+				return migrated, fmt.Errorf("update: preserve %s: %w", src, err)
+			}
+			if archived {
+				migrated = append(migrated, entry.Name())
+			}
+			continue
+		}
+		if err := os.MkdirAll(localDir, 0o755); err != nil {
+			return migrated, fmt.Errorf("update: create %s: %w", localDir, err)
+		}
+		if err := os.Rename(src, dst); err != nil {
+			return migrated, fmt.Errorf("update: move %s to %s: %w", src, dst, err)
+		}
+		migrated = append(migrated, entry.Name())
+	}
+	return migrated, nil
+}
+
+// preserveConflict keeps the existing releases.local/ file when a non-catalog
+// file with the same name arrives: identical duplicates are dropped (reported
+// as not archived), and a genuinely different file is moved into
+// releases.local/conflicts/ so no bytes are lost.
+func preserveConflict(src, dst, localDir string) (bool, error) {
+	srcData, srcErr := os.ReadFile(src)
+	dstData, dstErr := os.ReadFile(dst)
+	if srcErr == nil && dstErr == nil && bytes.Equal(srcData, dstData) {
+		return false, os.Remove(src) // duplicate of the preserved local file
+	}
+
+	conflicts := filepath.Join(localDir, "conflicts")
+	if err := os.MkdirAll(conflicts, 0o755); err != nil {
+		return false, fmt.Errorf("create %s: %w", conflicts, err)
+	}
+	target, err := uniquePath(conflicts, filepath.Base(src))
+	if err != nil {
+		return false, fmt.Errorf("pick archive path under %s: %w", conflicts, err)
+	}
+	if err := os.Rename(src, target); err != nil {
+		return false, fmt.Errorf("move %s to %s: %w", src, target, err)
+	}
+	return true, nil
+}
+
+// uniquePath returns dir/name, or dir/name.N for the first free suffix, so a
+// move never overwrites an existing file. An unexpected Lstat error is
+// returned instead of retried.
+func uniquePath(dir, name string) (string, error) {
+	path := filepath.Join(dir, name)
+	for i := 1; ; i++ {
+		_, err := os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			return path, nil
+		}
+		if err != nil {
+			return "", err
+		}
+		path = filepath.Join(dir, fmt.Sprintf("%s.%d", name, i))
+	}
 }
 
 // swap replaces ${Root}/releases and ${Root}/manifests with the staged

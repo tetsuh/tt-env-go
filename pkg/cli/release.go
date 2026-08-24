@@ -2,22 +2,12 @@ package cli
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
-	"sort"
-	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/tetsuh/tt-env-go/pkg/catalog"
 	"github.com/tetsuh/tt-env-go/pkg/manifest"
 	"github.com/tetsuh/tt-env-go/pkg/version"
 )
-
-// catalogEntry is a release advertised by a manifest under ${TT_HOME}/releases,
-// together with whether it is installed locally.
-type catalogEntry struct {
-	Release   string
-	Installed bool
-}
 
 // runUse switches the active release by updating the current symlink.
 func runUse(cmd *cobra.Command, release string) error {
@@ -53,22 +43,26 @@ func runDiff(cmd *cobra.Command, leftRelease, rightRelease string) error {
 	return manifest.Diff(left, right).Render(cmd.OutOrStdout())
 }
 
-// loadReleaseManifest resolves and loads the manifest for release from
-// ${TT_HOME}/releases/<release>.json, validating the release name first.
+// loadReleaseManifest resolves and loads the manifest for release from the
+// local manifest directory and the catalog cache (local overrides catalog),
+// validating the release name first.
 func loadReleaseManifest(release string) (*manifest.Manifest, error) {
 	if err := version.ValidateRelease(release); err != nil {
 		return nil, err
 	}
-	path := filepath.Join(ttHome(), "releases", release+".json")
+	path, _, err := catalog.Path(ttHome(), release)
+	if err != nil {
+		return nil, err
+	}
 	return manifest.Load(path)
 }
 
-// runList prints the release catalog, marking each release installed or
-// available, mirroring proto1 list_releases.
+// runList prints the release catalog, marking each release installed,
+// available, and/or local-only, mirroring proto1 list_releases.
 func runList(cmd *cobra.Command) error {
 	root := ttHome()
 	inst := &version.Installer{Root: root}
-	entries, warnings := collectCatalog(filepath.Join(root, "releases"), inst)
+	entries, warnings := catalog.Available(root)
 
 	for _, w := range warnings {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: skipping invalid release manifest: %s\n", w)
@@ -82,48 +76,13 @@ func runList(cmd *cobra.Command) error {
 	}
 	for _, e := range entries {
 		state := "available"
-		if e.Installed {
+		if inst.IsInstalled(e.Release) {
 			state = "installed"
+		}
+		if e.Local {
+			state += ", local"
 		}
 		fmt.Fprintf(out, "  %s [%s]\n", e.Release, state)
 	}
 	return nil
-}
-
-// collectCatalog reads every *.json manifest under releasesDir, returning the
-// advertised releases sorted by name and the paths of any manifests that could
-// not be parsed. A missing releasesDir yields an empty catalog.
-func collectCatalog(releasesDir string, inst *version.Installer) ([]catalogEntry, []string) {
-	dir, err := os.Open(releasesDir)
-	if err != nil {
-		return nil, nil
-	}
-	defer dir.Close()
-
-	names, err := dir.Readdirnames(-1)
-	if err != nil {
-		return nil, nil
-	}
-
-	var entries []catalogEntry
-	var warnings []string
-	for _, name := range names {
-		if !strings.HasSuffix(name, ".json") {
-			continue
-		}
-		path := filepath.Join(releasesDir, name)
-		m, err := manifest.Load(path)
-		if err != nil {
-			warnings = append(warnings, path)
-			continue
-		}
-		entries = append(entries, catalogEntry{
-			Release:   m.Release,
-			Installed: inst.IsInstalled(m.Release),
-		})
-	}
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].Release < entries[j].Release
-	})
-	return entries, warnings
 }
