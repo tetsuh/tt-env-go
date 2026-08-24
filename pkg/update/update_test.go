@@ -196,21 +196,29 @@ func TestUpdateReplacesFetchedManifest(t *testing.T) {
 	}
 }
 
+// writeBothSides places the same non-catalog manifest name on both sides of
+// the releases/ and releases.local/ split.
+func writeBothSides(t *testing.T, root, cacheBody, localBody string) {
+	t.Helper()
+	for _, dir := range []string{"releases", "releases.local"} {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for rel, body := range map[string]string{
+		filepath.Join("releases", "x.json"):        cacheBody,
+		filepath.Join("releases.local", "x.json"): localBody,
+	} {
+		if err := os.WriteFile(filepath.Join(root, rel), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestUpdatePreservesConflictingLocalFile(t *testing.T) {
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "releases"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(root, "releases.local"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	// The same non-catalog name exists on both sides with different content.
-	if err := os.WriteFile(filepath.Join(root, "releases", "x.json"), []byte("old copy"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "releases.local", "x.json"), []byte("kept local copy"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeBothSides(t, root, "old copy", "kept local copy")
 
 	fetchCatalog(t, root, map[string]string{"a.json": `{"release":"a"}`})
 	if data, err := os.ReadFile(filepath.Join(root, "releases.local", "x.json")); err != nil || string(data) != "kept local copy" {
@@ -223,18 +231,7 @@ func TestUpdatePreservesConflictingLocalFile(t *testing.T) {
 
 func TestUpdateDropsDuplicateLocalFile(t *testing.T) {
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "releases"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(root, "releases.local"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "releases", "x.json"), []byte("same"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "releases.local", "x.json"), []byte("same"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeBothSides(t, root, "same", "same")
 
 	fetchCatalog(t, root, map[string]string{"a.json": `{"release":"a"}`})
 	if data, err := os.ReadFile(filepath.Join(root, "releases.local", "x.json")); err != nil || string(data) != "same" {
