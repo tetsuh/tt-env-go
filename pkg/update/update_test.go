@@ -206,7 +206,7 @@ func writeBothSides(t *testing.T, root, cacheBody, localBody string) {
 		}
 	}
 	for rel, body := range map[string]string{
-		filepath.Join("releases", "x.json"):        cacheBody,
+		filepath.Join("releases", "x.json"):       cacheBody,
 		filepath.Join("releases.local", "x.json"): localBody,
 	} {
 		if err := os.WriteFile(filepath.Join(root, rel), []byte(body), 0o644); err != nil {
