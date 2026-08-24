@@ -154,12 +154,8 @@ func TestUpdateMigratesCapturedManifest(t *testing.T) {
 	// A locally captured manifest predating the releases.local/ split sits in
 	// the catalog cache and is not part of the fetched catalog.
 	const captured = `{"release":"2026.05.16","description":"local capture"}`
-	if err := os.MkdirAll(filepath.Join(root, "releases"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "releases", "2026.05.16.json"), []byte(captured), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	mkdirAll(t, filepath.Join(root, "releases"))
+	writeFile(t, filepath.Join(root, "releases", "2026.05.16.json"), captured)
 
 	fetchCatalog(t, root, map[string]string{"a.json": `{"release":"a"}`})
 	data, err := os.ReadFile(filepath.Join(root, "releases.local", "2026.05.16.json"))
@@ -176,12 +172,8 @@ func TestUpdateMigratesCapturedManifest(t *testing.T) {
 
 func TestUpdateReplacesFetchedManifest(t *testing.T) {
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "releases"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "releases", "a.json"), []byte(`stale`), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	mkdirAll(t, filepath.Join(root, "releases"))
+	writeFile(t, filepath.Join(root, "releases", "a.json"), `stale`)
 
 	res := fetchCatalog(t, root, map[string]string{"a.json": `{"release":"a"}`})
 	if len(res.Migrated) != 0 {
@@ -196,23 +188,29 @@ func TestUpdateReplacesFetchedManifest(t *testing.T) {
 	}
 }
 
+// mkdirAll and writeFile are tiny fixtures shared by the migration tests.
+func mkdirAll(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeFile(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // writeBothSides places the same non-catalog manifest name on both sides of
 // the releases/ and releases.local/ split.
 func writeBothSides(t *testing.T, root, cacheBody, localBody string) {
 	t.Helper()
-	for _, dir := range []string{"releases", "releases.local"} {
-		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for rel, body := range map[string]string{
-		filepath.Join("releases", "x.json"):       cacheBody,
-		filepath.Join("releases.local", "x.json"): localBody,
-	} {
-		if err := os.WriteFile(filepath.Join(root, rel), []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
+	mkdirAll(t, filepath.Join(root, "releases"))
+	mkdirAll(t, filepath.Join(root, "releases.local"))
+	writeFile(t, filepath.Join(root, "releases", "x.json"), cacheBody)
+	writeFile(t, filepath.Join(root, "releases.local", "x.json"), localBody)
 }
 
 func TestUpdatePreservesConflictingLocalFile(t *testing.T) {
