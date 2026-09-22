@@ -21,6 +21,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/tetsuh/tt-env-go/pkg/catalog"
 	"github.com/tetsuh/tt-env-go/pkg/gitclone"
 	"github.com/tetsuh/tt-env-go/pkg/manifest"
 	packagemanager "github.com/tetsuh/tt-env-go/pkg/package_manager"
@@ -162,7 +163,11 @@ func (o *Orchestrator) Install(ctx context.Context, release string, opts Options
 // loadPlanManifest loads the manifest that supplies the install plan. For a
 // normal install this is the release's own manifest; for a --latest install it
 // is opts.Base (defaulting to the release), used only for its structure.
+// Both lookups search the local manifest directory first (local overrides
+// catalog).
 func (o *Orchestrator) loadPlanManifest(release string, opts Options) (*manifest.Manifest, error) {
+	name := release
+	kind := "release"
 	if opts.Latest {
 		base := opts.Base
 		if base == "" {
@@ -170,24 +175,19 @@ func (o *Orchestrator) loadPlanManifest(release string, opts Options) (*manifest
 		} else if err := version.ValidateRelease(base); err != nil {
 			return nil, err
 		}
-		manifestPath := filepath.Join(o.Root, "releases", base+".json")
-		m, err := manifest.Load(manifestPath)
-		if err != nil {
-			return nil, err
-		}
-		if m.Release != base {
-			return nil, fmt.Errorf("install: base manifest %s declares %q, expected %q", manifestPath, m.Release, base)
-		}
-		return m, nil
+		name, kind = base, "base"
 	}
 
-	manifestPath := filepath.Join(o.Root, "releases", release+".json")
+	manifestPath, _, err := catalog.Path(o.Root, name)
+	if err != nil {
+		return nil, fmt.Errorf("install: resolve %s manifest: %w", kind, err)
+	}
 	m, err := manifest.Load(manifestPath)
 	if err != nil {
 		return nil, err
 	}
-	if m.Release != release {
-		return nil, fmt.Errorf("install: release manifest %s declares %q, expected %q", manifestPath, m.Release, release)
+	if m.Release != name {
+		return nil, fmt.Errorf("install: %s manifest %s declares %q, expected %q", kind, manifestPath, m.Release, name)
 	}
 	return m, nil
 }

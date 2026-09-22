@@ -166,6 +166,38 @@ func TestListCommandIgnoresNonJSONFiles(t *testing.T) {
 	}
 }
 
+func TestListCommandMarksLocalManifests(t *testing.T) {
+	root := t.TempDir()
+	installRelease(t, root, "2026.05.16") // installed local-only release
+	writeManifest(t, filepath.Join(root, "releases"), "a.json", `{"release":"0.75.0"}`)
+	writeManifest(t, filepath.Join(root, "releases.local"), "b.json", `{"release":"2026.05.16"}`)
+	// A local manifest shadowing a catalog release is listed once, as local.
+	writeManifest(t, filepath.Join(root, "releases"), "c.json", `{"release":"0.76.0"}`)
+	writeManifest(t, filepath.Join(root, "releases.local"), "d.json", `{"release":"0.76.0"}`)
+	t.Setenv("TT_HOME", root)
+
+	out := new(bytes.Buffer)
+	listCmd.SetOut(out)
+	t.Cleanup(func() { listCmd.SetOut(nil) })
+
+	if err := runList(listCmd); err != nil {
+		t.Fatalf("runList() error = %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{
+		"0.75.0 [available]",
+		"0.76.0 [available, local]",
+		"2026.05.16 [installed, local]",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("list output missing %q\n%s", want, got)
+		}
+	}
+	if strings.Count(got, "0.76.0") != 1 {
+		t.Errorf("shadowed catalog release must be listed once\n%s", got)
+	}
+}
+
 func TestUseAndListCommandArgs(t *testing.T) {
 	if useCmd.Args == nil || listCmd.Args == nil {
 		t.Fatal("use/list commands must declare Args validators")

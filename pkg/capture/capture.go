@@ -17,6 +17,7 @@ package capture
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -28,6 +29,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tetsuh/tt-env-go/pkg/catalog"
 	"github.com/tetsuh/tt-env-go/pkg/manifest"
 	packagemanager "github.com/tetsuh/tt-env-go/pkg/package_manager"
 	"github.com/tetsuh/tt-env-go/pkg/stackpolicy"
@@ -165,10 +167,19 @@ func (c *Capturer) Capture(ctx context.Context, release string, opts Options) (R
 	}
 
 	inst := &version.Installer{Root: c.Root}
-	target := filepath.Join(c.Root, "releases", release+".json")
-	if !opts.DryRun && !opts.Force {
-		if _, err := os.Stat(target); err == nil {
-			return Result{}, fmt.Errorf("capture: release manifest already exists: %s (use --force to overwrite)", target)
+	// Local-only manifests live outside the catalog cache so "tt-env update"
+	// cannot delete them; capture refuses to shadow an existing manifest
+	// (local or catalog) without --force, and non-forced publication never
+	// replaces a target created after this check.
+	target := filepath.Join(catalog.LocalDir(c.Root), release+".json")
+	var catalogShadowed bool
+	if existing, local, err := catalog.Path(c.Root, release); err == nil {
+		catalogShadowed = !local
+		if !opts.DryRun && !opts.Force {
+			if local {
+				return Result{}, fmt.Errorf("capture: local release manifest already exists: %s (use --force to overwrite)", existing)
+			}
+			return Result{}, fmt.Errorf("capture: catalog already defines release %s (%s); a local manifest would shadow it (use --force to capture anyway)", release, existing)
 		}
 	}
 
@@ -227,11 +238,14 @@ func (c *Capturer) Capture(ctx context.Context, release string, opts Options) (R
 		return result, nil
 	}
 
-	if err := writeManifestAtomically(target, rendered); err != nil {
+	if err := writeManifestAtomically(target, rendered, opts.Force); err != nil {
 		return Result{}, err
 	}
 	result.Written = true
 	c.logf("Captured local release manifest: %s", target)
+	if catalogShadowed {
+		c.logf("Local manifest %s overrides the catalog manifest for release %s", target, release)
+	}
 	return result, nil
 }
 
@@ -274,7 +288,11 @@ func (c *Capturer) resolveBase(release, requested, requestedProbe string, inst *
 		return "", "", nil, fmt.Errorf("capture: probe release %s is not installed at %s; capture reads installed versions", probe, inst.ReleaseDir(probe))
 	}
 
-	baseManifest, err := manifest.Load(filepath.Join(c.Root, "releases", base+".json"))
+	basePath, _, err := catalog.Path(c.Root, base)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("capture: load base manifest: %w", err)
+	}
+	baseManifest, err := manifest.Load(basePath)
 	if err != nil {
 		return "", "", nil, fmt.Errorf("capture: load base manifest: %w", err)
 	}
@@ -282,23 +300,17 @@ func (c *Capturer) resolveBase(release, requested, requestedProbe string, inst *
 }
 
 // latestInstalledBase returns the lexicographically latest dated release that is
-// installed and is not the capture target. Dated names sort chronologically.
+// installed and is not the capture target, searching both the local manifest
+// directory and the catalog cache. Dated names sort chronologically.
 func (c *Capturer) latestInstalledBase(release string, inst *version.Installer) (string, error) {
-	entries, err := os.ReadDir(filepath.Join(c.Root, "releases"))
-	if err != nil {
-		return "", fmt.Errorf("capture: read releases directory: %w", err)
-	}
+	entries, _ := catalog.Available(c.Root)
 	var candidates []string
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+	for _, e := range entries {
+		if e.Release == release || !datedReleaseRe.MatchString(e.Release) {
 			continue
 		}
-		name := strings.TrimSuffix(entry.Name(), ".json")
-		if name == release || !datedReleaseRe.MatchString(name) {
-			continue
-		}
-		if inst.IsInstalled(name) {
-			candidates = append(candidates, name)
+		if inst.IsInstalled(e.Release) {
+			candidates = append(candidates, e.Release)
 		}
 	}
 	if len(candidates) == 0 {
@@ -564,7 +576,10 @@ func buildComponents(base *manifest.Manifest, systemPackages, pythonPackages map
 
 // writeManifestAtomically writes data to target via a temp file in the same
 // directory followed by a rename, so a reader never sees a partial manifest.
-func writeManifestAtomically(target string, data []byte) error {
+// When replace is false the target is created with link(2), which fails
+// atomically if the target already exists, so a manifest created after the
+// caller's preflight check is never overwritten without --force.
+func writeManifestAtomically(target string, data []byte, replace bool) error {
 	dir := filepath.Dir(target)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("capture: create releases directory: %w", err)
@@ -587,7 +602,18 @@ func writeManifestAtomically(target string, data []byte) error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("capture: close temp manifest: %w", err)
 	}
-	if err := os.Rename(tmpName, target); err != nil {
+	if replace {
+		if err := os.Rename(tmpName, target); err != nil {
+			return fmt.Errorf("capture: write manifest %s: %w", target, err)
+		}
+		return nil
+	}
+	// link(2) fails atomically when the target exists, unlike rename(2),
+	// which would replace it.
+	if err := os.Link(tmpName, target); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("capture: release manifest already exists: %s (use --force to overwrite)", target)
+		}
 		return fmt.Errorf("capture: write manifest %s: %w", target, err)
 	}
 	return nil

@@ -30,7 +30,7 @@ var useCmd = &cobra.Command{
 var listCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all installed and available releases",
-	Long:  `Displays a list of all local installed releases and all available remote releases in the catalog.`,
+	Long:  `Displays installed releases and all available releases from the catalog and from local manifests under releases.local/.`,
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runList(cmd)
@@ -55,7 +55,7 @@ var updateSelf bool
 var updateCmd = &cobra.Command{
 	Use:   "update",
 	Short: "Update release manifest catalogs",
-	Long:  `Fetches and updates the local cache of Tenstorrent stack release manifests from the remote repository.`,
+	Long:  `Fetches and updates the local cache of Tenstorrent stack release manifests from the remote repository. Local manifests under releases.local/ are preserved.`,
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runUpdate(cmd, updateSelf)
