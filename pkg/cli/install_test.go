@@ -25,15 +25,17 @@ func installFlagCommand(t *testing.T, flags map[string]string) (*cobra.Command, 
 	return cmd, &warnings
 }
 
+type installFlagsTestCase struct {
+	name       string
+	flags      map[string]string
+	wantLike   string
+	wantWarn   string
+	wantErr    string
+	wantUpgrad bool
+}
+
 func TestInstallUpgradeFlagsAndAliases(t *testing.T) {
-	for _, tc := range []struct {
-		name       string
-		flags      map[string]string
-		wantLike   string
-		wantWarn   string
-		wantErr    string
-		wantUpgrad bool
-	}{
+	for _, tc := range []installFlagsTestCase{
 		{name: "upgrade", flags: map[string]string{"upgrade": "true", "like": "0.75.0"}, wantLike: "0.75.0", wantUpgrad: true},
 		{name: "deprecated aliases", flags: map[string]string{"latest": "true", "base": "0.75.0"}, wantLike: "0.75.0", wantWarn: "--latest is an alias for --upgrade", wantUpgrad: true},
 		{name: "same template aliases", flags: map[string]string{"upgrade": "true", "like": "0.75.0", "base": "0.75.0"}, wantLike: "0.75.0", wantWarn: "--base is an alias for --like", wantUpgrad: true},
@@ -41,28 +43,31 @@ func TestInstallUpgradeFlagsAndAliases(t *testing.T) {
 		{name: "template without upgrade", flags: map[string]string{"like": "0.75.0"}, wantErr: "--like requires --upgrade"},
 		{name: "legacy base without upgrade", flags: map[string]string{"base": "0.75.0"}, wantErr: "--like requires --upgrade"},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			cmd, warnings := installFlagCommand(t, tc.flags)
-			got, err := installFlags(cmd)
-			if tc.wantErr != "" {
-				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-					t.Fatalf("installFlags() error = %v, want %q", err, tc.wantErr)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got.Upgrade != tc.wantUpgrad || got.Like != tc.wantLike {
-				t.Errorf("options = %+v, want upgrade=%t like=%q", got, tc.wantUpgrad, tc.wantLike)
-			}
-			if tc.wantWarn != "" && !strings.Contains(warnings.String(), tc.wantWarn) {
-				t.Errorf("warning = %q, want %q", warnings.String(), tc.wantWarn)
-			}
-			if tc.wantWarn == "" && warnings.Len() != 0 {
-				t.Errorf("unexpected warning: %q", warnings.String())
-			}
-		})
+		t.Run(tc.name, func(t *testing.T) { assertInstallFlagCase(t, tc) })
+	}
+}
+
+func assertInstallFlagCase(t *testing.T, tc installFlagsTestCase) {
+	t.Helper()
+	cmd, warnings := installFlagCommand(t, tc.flags)
+	got, err := installFlags(cmd)
+	if tc.wantErr != "" {
+		if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+			t.Fatalf("installFlags() error = %v, want %q", err, tc.wantErr)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Upgrade != tc.wantUpgrad || got.Like != tc.wantLike {
+		t.Errorf("options = %+v, want upgrade=%t like=%q", got, tc.wantUpgrad, tc.wantLike)
+	}
+	if tc.wantWarn != "" && !strings.Contains(warnings.String(), tc.wantWarn) {
+		t.Errorf("warning = %q, want %q", warnings.String(), tc.wantWarn)
+	}
+	if tc.wantWarn == "" && warnings.Len() != 0 {
+		t.Errorf("unexpected warning: %q", warnings.String())
 	}
 }
 

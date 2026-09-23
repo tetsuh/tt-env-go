@@ -82,17 +82,17 @@ func TestUpgradeDryRunAndInstallShareScopeSummary(t *testing.T) {
 	if _, err := orch.Install(context.Background(), target, opts); err != nil {
 		t.Fatalf("upgrade: %v", err)
 	}
-	real := resolutionSummary(logs)
-	if dry != real {
-		t.Errorf("scope summary differs between dry-run and install:\ndry: %s\nreal: %s", dry, real)
+	installedSummary := resolutionSummary(logs)
+	if dry != installedSummary {
+		t.Errorf("scope summary differs between dry-run and install:\ndry: %s\ninstalled: %s", dry, installedSummary)
 	}
 	for _, want := range []string{
 		"re-resolve: system and Python packages", "git components at remote HEAD",
 		"keep: container references from the template manifest (no container digest refresh)",
 		"optional metalium: skipped (not declared)", "ghcr.io/tenstorrent/tt-metalium@sha256:abc123",
 	} {
-		if !strings.Contains(real, want) {
-			t.Errorf("summary missing %q: %s", want, real)
+		if !strings.Contains(installedSummary, want) {
+			t.Errorf("summary missing %q: %s", want, installedSummary)
 		}
 	}
 }
