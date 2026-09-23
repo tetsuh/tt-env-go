@@ -18,8 +18,9 @@ var SystemVirtualPackages = []string{
 	"metalium",
 }
 
-// PinnedVirtualPackages must carry a version pin from the stack manifest; a
-// missing pin is a hard error during install.
+// PinnedVirtualPackages are versioned when a pin is present; an absent pin
+// resolves to the current package-manager candidate. Present pins are checked
+// against configured repositories before any system mutation.
 var PinnedVirtualPackages = map[string]bool{
 	"kmd":      true,
 	"smi":      true,
@@ -28,7 +29,7 @@ var PinnedVirtualPackages = map[string]bool{
 }
 
 // OptionalVirtualPackages are skipped when the OS manifest does not define them
-// or the stack manifest does not pin them.
+// or the stack manifest does not declare them.
 var OptionalVirtualPackages = map[string]bool{
 	"metalium": true,
 }
@@ -46,7 +47,8 @@ var CaptureVirtualPackages = []string{
 }
 
 // PipPackages is the ordered list of Python packages installed into the release
-// virtualenv. Each must be pinned in the stack manifest's python_packages.
+// virtualenv. Missing versions resolve to current pip candidates and are recorded
+// in the install lock.
 var PipPackages = []string{
 	"tt-smi",
 	"tt-umd",

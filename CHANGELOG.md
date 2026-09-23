@@ -9,12 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`install`** records the resolved versions of every install in a lock at
-  `versions/<release>/manifest.json`: concrete system-package and Python
-  versions (unpinned and `--latest` entries probed after installation), git
+- **`install`** resolves unpinned system and Python packages to candidates
+  from configured repositories and indexes, and records the resulting versions
+  in a lock at `versions/<release>/manifest.json`. `--force` on a locked release
+  replays its pins; `--latest --force` intentionally refreshes package versions.
+  Pinned package availability is checked before mutation against configured
+  repositories and indexes (DNF uses cached metadata only, so a required
+  repository not yet configured can block installation). Locks also record git
   revisions, container components, and provenance (`source`, `base`, catalog
-  repository and ref, install timestamp). `list` and `status` show the
-  provenance, and `diff` resolves an installed release to its lock.
+  repository and ref, install timestamp); `list` and `status` show provenance,
+  and `diff` resolves an installed release to its lock.
 - **`update`** records the fetched catalog's provenance (repository and ref) in
   `manifests/catalog_source.json`, cited by install-time locks.
 

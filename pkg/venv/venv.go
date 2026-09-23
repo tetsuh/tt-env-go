@@ -97,7 +97,17 @@ func (p *Provisioner) VenvPython(targetDir string) (string, error) {
 // pinned versions). It returns nil without running any command when packages is
 // empty.
 func (p *Provisioner) Provision(ctx context.Context, targetDir string, packages map[string]string) error {
-	specs, err := resolvePackages(packages)
+	specs, err := resolvePackages(packages, false)
+	if err != nil {
+		return err
+	}
+	return p.provision(ctx, targetDir, specs)
+}
+
+// ProvisionResolved installs a mixture of pinned and unpinned packages. Empty
+// versions are resolved by pip; the caller can record the installed versions.
+func (p *Provisioner) ProvisionResolved(ctx context.Context, targetDir string, packages map[string]string) error {
+	specs, err := resolvePackages(packages, true)
 	if err != nil {
 		return err
 	}
@@ -168,7 +178,7 @@ func needsCreate(venvPython string) (bool, error) {
 
 // resolvePackages converts the name->version map into a sorted slice of
 // "name==version" specifiers, validating each name and version.
-func resolvePackages(packages map[string]string) ([]string, error) {
+func resolvePackages(packages map[string]string, allowUnpinned bool) ([]string, error) {
 	if len(packages) == 0 {
 		return nil, nil
 	}
@@ -187,6 +197,13 @@ func resolvePackages(packages map[string]string) ([]string, error) {
 			return nil, fmt.Errorf("venv: package name must not contain '==': %q", name)
 		}
 		version := packages[name]
+		if version == "" {
+			if !allowUnpinned {
+				return nil, fmt.Errorf("venv: package %q is missing a version", name)
+			}
+			specs = append(specs, name)
+			continue
+		}
 		if err := validateToken("package version", version); err != nil {
 			return nil, err
 		}

@@ -2,12 +2,15 @@ package install
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/tetsuh/tt-env-go/pkg/lock"
+	"github.com/tetsuh/tt-env-go/pkg/manifest"
 	packagemanager "github.com/tetsuh/tt-env-go/pkg/package_manager"
 )
 
@@ -87,6 +90,12 @@ func mustWrite(t *testing.T, path, content string) {
 func cloneAwareRunner() *packagemanager.MockRunner {
 	r := &packagemanager.MockRunner{}
 	r.RunFunc = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if name == "apt-cache" {
+			return []byte("9.9.9 1.0.0 2.0.0 3.0.0 4.0.0 5.0.0 1.1.0 1.2.0 1.3.0 1.4.0 1.5.0"), nil
+		}
+		if isPipVersionPreflightCommand(name, args) {
+			return []byte("available"), nil
+		}
 		if name == "git" && len(args) > 0 && args[0] == "clone" {
 			dest := args[len(args)-1]
 			_ = os.MkdirAll(dest, 0o755)
@@ -155,7 +164,8 @@ func TestInstallSystemPackagePath(t *testing.T) {
 func TestInstallDryRunDoesNotStage(t *testing.T) {
 	root, osRelease := setupRoot(t)
 	runner := cloneAwareRunner()
-	orch := withProbes(&Orchestrator{Root: root, Runner: runner, OSReleasePath: osRelease, Logf: func(string, ...any) {}})
+	var logs []string
+	orch := withProbes(&Orchestrator{Root: root, Runner: runner, OSReleasePath: osRelease, Logf: func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) }})
 
 	res, err := orch.Install(context.Background(), testRelease, Options{DryRun: true})
 	if err != nil {
@@ -169,6 +179,9 @@ func TestInstallDryRunDoesNotStage(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "versions", testRelease)); !os.IsNotExist(err) {
 		t.Errorf("dry-run must not create the version dir")
+	}
+	if !strings.Contains(strings.Join(logs, "\n"), "pinned system") || !strings.Contains(strings.Join(logs, "\n"), "container tt-metalium-ubuntu24") {
+		t.Errorf("dry-run resolution summary missing pins or container identity: %v", logs)
 	}
 }
 
@@ -213,6 +226,233 @@ func TestInstallForceReinstalls(t *testing.T) {
 	}
 	if len(runner.Commands) == 0 {
 		t.Errorf("force reinstall must run staging commands")
+	}
+}
+
+func TestInstallUnpinnedPackagesResolveAndLog(t *testing.T) {
+	root, osRelease := setupRoot(t)
+	unpinned := strings.ReplaceAll(testStackManifest, `"kmd": "1.0.0",
+    "smi": "2.0.0",
+    "flash": "3.0.0",
+    "topology": "4.0.0",
+    "metalium": "5.0.0"`, "")
+	unpinned = strings.ReplaceAll(unpinned, `"tt-smi": "1.1.0",
+    "tt-umd": "1.2.0",
+    "textual": "1.3.0",
+    "elasticsearch": "1.4.0",
+    "tt-burnin": "1.5.0"`, "")
+	mustWrite(t, filepath.Join(root, "releases", testRelease+".json"), unpinned)
+	runner := cloneAwareRunner()
+	var logs []string
+	orch := withProbes(&Orchestrator{Root: root, Runner: runner, OSReleasePath: osRelease, Logf: func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) }})
+	if _, err := orch.Install(context.Background(), testRelease, Options{}); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	l, err := lock.Read(filepath.Join(root, "versions", testRelease))
+	if err != nil {
+		t.Fatalf("lock.Read: %v", err)
+	}
+	if l.SystemPackages["kmd"] != "9.9.9" || l.PythonPackages["tt-smi"] != "9.9.9" {
+		t.Fatalf("unpinned versions not resolved into lock: system=%v python=%v", l.SystemPackages, l.PythonPackages)
+	}
+	joined := strings.Join(logs, "\n")
+	for _, want := range []string{"unpinned system candidates", "unpinned pip candidates", "optional metalium: skipped", "versions/" + testRelease + "/manifest.json"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("summary missing %q: %s", want, joined)
+		}
+	}
+}
+
+func TestInstallForceReusesLockAndRejectsBadLock(t *testing.T) {
+	root, osRelease := setupRoot(t)
+	var logs []string
+	orch := withProbes(&Orchestrator{Root: root, Runner: cloneAwareRunner(), OSReleasePath: osRelease, Logf: func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) }})
+	if _, err := orch.Install(context.Background(), testRelease, Options{}); err != nil {
+		t.Fatalf("initial install: %v", err)
+	}
+	changed := strings.Replace(testStackManifest, `"kmd": "1.0.0"`, `"kmd": "99.0.0"`, 1)
+	mustWrite(t, filepath.Join(root, "releases", testRelease+".json"), changed)
+	runner := cloneAwareRunner()
+	orch.Runner = runner
+	if _, err := orch.Install(context.Background(), testRelease, Options{Force: true}); err != nil {
+		t.Fatalf("force install: %v", err)
+	}
+	if got := installSpecs(runner); !contains(got, "tenstorrent-dkms=1.0.0") {
+		t.Fatalf("force reinstall did not use lock version: %v", got)
+	}
+	if !strings.Contains(strings.Join(logs, "\n"), "package resolution: installed lock replay") {
+		t.Fatalf("force reinstall summary did not identify lock replay: %v", logs)
+	}
+	mustWrite(t, filepath.Join(root, "versions", testRelease, lock.FileName), "not json")
+	if _, err := orch.Install(context.Background(), testRelease, Options{Force: true}); err == nil {
+		t.Fatal("force reinstall must reject invalid lock")
+	}
+}
+
+func TestForceWithoutLockFallsBackToCurrentManifest(t *testing.T) {
+	root, osRelease := setupRoot(t)
+	orch := withProbes(&Orchestrator{Root: root, Runner: cloneAwareRunner(), OSReleasePath: osRelease, Logf: func(string, ...any) {}})
+	if _, err := orch.Install(context.Background(), testRelease, Options{}); err != nil {
+		t.Fatalf("initial install: %v", err)
+	}
+	if err := os.Remove(lock.Path(filepath.Join(root, "versions", testRelease))); err != nil {
+		t.Fatal(err)
+	}
+	runner := cloneAwareRunner()
+	orch.Runner = runner
+	if _, err := orch.Install(context.Background(), testRelease, Options{Force: true}); err != nil {
+		t.Fatalf("force install without legacy lock: %v", err)
+	}
+	if got := installSpecs(runner); !contains(got, "tenstorrent-dkms=1.0.0") {
+		t.Fatalf("legacy force reinstall did not use manifest pins: %v", got)
+	}
+}
+
+func installedLockFixture(t *testing.T) (root, releaseDir string, l *lock.Lock, orch *Orchestrator) {
+	t.Helper()
+	root, osRelease := setupRoot(t)
+	orch = withProbes(&Orchestrator{Root: root, Runner: cloneAwareRunner(), OSReleasePath: osRelease, Logf: func(string, ...any) {}})
+	if _, err := orch.Install(context.Background(), testRelease, Options{}); err != nil {
+		t.Fatalf("initial install: %v", err)
+	}
+	releaseDir = filepath.Join(root, "versions", testRelease)
+	var err error
+	l, err = lock.Read(releaseDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return root, releaseDir, l, orch
+}
+
+func TestForceRejectsIncompleteLockBeforeMutation(t *testing.T) {
+	root, releaseDir, l, orch := installedLockFixture(t)
+	delete(l.SystemPackages, "cmake")
+	if err := lock.Write(releaseDir, l); err != nil {
+		t.Fatal(err)
+	}
+	runner := cloneAwareRunner()
+	orch.Runner = runner
+	if _, err := orch.Install(context.Background(), testRelease, Options{Force: true}); err == nil || !strings.Contains(err.Error(), "no concrete version") || !strings.Contains(err.Error(), `"cmake"`) {
+		t.Fatalf("expected incomplete lock error to name concrete package cmake, got %v", err)
+	}
+	if len(runner.Commands) != 0 {
+		t.Fatalf("incomplete lock must fail before commands, got %v", runner.Commands)
+	}
+	if _, err := os.Stat(filepath.Join(root, "versions", "."+testRelease+".partial")); !os.IsNotExist(err) {
+		t.Fatalf("incomplete lock must fail before staging, stat error = %v", err)
+	}
+}
+
+func TestForceRejectsLockForDifferentRelease(t *testing.T) {
+	_, releaseDir, l, orch := installedLockFixture(t)
+	l.Release = "2026.05.17"
+	if err := lock.Write(releaseDir, l); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := orch.Install(context.Background(), testRelease, Options{Force: true}); err == nil || !strings.Contains(err.Error(), "does not match requested release") {
+		t.Fatalf("expected lock release identity error, got %v", err)
+	}
+}
+
+func TestValidateLockedPackagesFallsBackToConcreteName(t *testing.T) {
+	p := &plan{
+		release:        testRelease,
+		osm:            &manifest.OSManifest{},
+		systemPackages: []packagemanager.Package{{Name: "unmapped-package"}},
+	}
+	if err := validateLockedPackages(p); err == nil || !strings.Contains(err.Error(), `"unmapped-package"`) {
+		t.Fatalf("expected missing-version error to name concrete package, got %v", err)
+	}
+}
+
+func TestPipPreflightComparesIndexedVersions(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 is unavailable")
+	}
+	checkPackaging := exec.Command(python, "-c", "from pip._vendor.packaging.version import Version")
+	if output, err := checkPackaging.CombinedOutput(); err != nil {
+		t.Skipf("python3 pip vendored packaging is unavailable: %v: %s", err, output)
+	}
+
+	const mockedChecker = `
+import subprocess
+import sys
+source, indexed_versions, package, pin = sys.argv[1:]
+class Result:
+    returncode = 0
+    stdout = "Available versions: " + indexed_versions
+    stderr = ""
+def mock_run(args, **kwargs):
+    expected = [sys.executable, "-m", "pip", "--no-cache-dir", "index", "versions", "--pre", package]
+    if args != expected:
+        raise AssertionError("unexpected pip index command: %r" % (args,))
+    return Result()
+subprocess.run = mock_run
+sys.argv = ["pip-version-preflight", package, pin]
+exec(source, {})
+`
+	for _, tc := range []struct {
+		name            string
+		indexedVersions string
+		pin             string
+		wantAvailable   bool
+	}{
+		{name: "prerelease accepted", indexedVersions: "1.0, 2.0rc1", pin: "2.0rc1", wantAvailable: true},
+		{name: "PEP 440 equivalent accepted", indexedVersions: "1.0", pin: "1.0.0", wantAvailable: true},
+		{name: "unavailable rejected", indexedVersions: "1.0", pin: "2.0", wantAvailable: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := exec.Command(python, "-c", mockedChecker, pipVersionPreflightScript, tc.indexedVersions, "sample", tc.pin)
+			output, err := cmd.CombinedOutput()
+			if tc.wantAvailable && err != nil {
+				t.Fatalf("checker rejected indexed version: %v: %s", err, output)
+			}
+			if !tc.wantAvailable && err == nil {
+				t.Fatalf("checker accepted unavailable pin; output: %s", output)
+			}
+			if tc.wantAvailable && strings.TrimSpace(string(output)) != "available" {
+				t.Fatalf("checker output = %q, want available", output)
+			}
+		})
+	}
+}
+
+func TestDnfPreflightUsesLockedRpmVersionReleaseAndCache(t *testing.T) {
+	runner := &packagemanager.MockRunner{RunFunc: func(context.Context, string, ...string) ([]byte, error) {
+		return []byte("1.0-2.fc40"), nil
+	}}
+	orch := &Orchestrator{Runner: runner}
+	p := &plan{pkgManager: "dnf", systemPackages: []packagemanager.Package{{Name: "sample", Version: "1.0-2.fc40"}}}
+	if err := orch.preflightPinnedPackages(context.Background(), p); err != nil {
+		t.Fatalf("preflightPinnedPackages: %v", err)
+	}
+	if len(runner.Commands) != 1 {
+		t.Fatalf("commands = %v, want one repoquery", runner.Commands)
+	}
+	cmd := runner.Commands[0]
+	if cmd.Name != "dnf" || !hasPrefix(cmd.Args, []string{"--cacheonly", "repoquery", "--available", "--qf", "%{VERSION}-%{RELEASE}", "sample"}) {
+		t.Fatalf("repoquery does not match installed RPM version-release: %+v", cmd)
+	}
+}
+
+func TestPinnedUnavailableFailsBeforeMutation(t *testing.T) {
+	root, osRelease := setupRoot(t)
+	runner := cloneAwareRunner()
+	runner.RunFunc = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if name == "apt-cache" {
+			return []byte(""), nil
+		}
+		return nil, nil
+	}
+	orch := withProbes(&Orchestrator{Root: root, Runner: runner, OSReleasePath: osRelease, Logf: func(string, ...any) {}})
+	if _, err := orch.Install(context.Background(), testRelease, Options{}); err == nil || !strings.Contains(err.Error(), "not available") {
+		t.Fatalf("expected unavailable pin error, got %v", err)
+	}
+	for _, c := range runner.Commands {
+		if c.Name == "sudo" {
+			t.Fatalf("pinned preflight mutated system before failure: %v", runner.Commands)
+		}
 	}
 }
 
@@ -290,6 +530,10 @@ func contains(haystack []string, needle string) bool {
 	return false
 }
 
+func isPipVersionPreflightCommand(name string, args []string) bool {
+	return name == "python3" && len(args) == 4 && args[0] == "-c" && args[1] == pipVersionPreflightScript && args[2] != "" && args[3] != ""
+}
+
 func containsArg(args []string, want string) bool {
 	for _, a := range args {
 		if a == want {
@@ -306,6 +550,12 @@ const latestHeadSHA = "fedcba9876543210fedcba9876543210fedcba98"
 func latestAwareRunner() *packagemanager.MockRunner {
 	r := &packagemanager.MockRunner{}
 	r.RunFunc = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if name == "apt-cache" {
+			return []byte("9.9.9 1.0.0 2.0.0 3.0.0 4.0.0 5.0.0 1.1.0 1.2.0 1.3.0 1.4.0 1.5.0"), nil
+		}
+		if isPipVersionPreflightCommand(name, args) {
+			return []byte("available"), nil
+		}
 		if name == "git" && len(args) > 0 && args[0] == "ls-remote" {
 			return []byte("ref: refs/heads/main\tHEAD\n" + latestHeadSHA + "\tHEAD\n"), nil
 		}

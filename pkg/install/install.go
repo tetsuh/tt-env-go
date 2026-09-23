@@ -14,6 +14,7 @@ package install
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -86,7 +87,8 @@ type Options struct {
 	// Base names the release manifest whose structure (packages, repos, git and
 	// container components) seeds a --latest install. When empty, the release
 	// being installed is used as its own template.
-	Base string
+	Base   string
+	locked *lock.Lock
 }
 
 // plan captures the resolved actions for an install, built once from the stack
@@ -108,7 +110,8 @@ type plan struct {
 	managedCommandNames map[string]bool
 	// latest reports whether this is a --latest install: system and pip packages
 	// are installed unpinned and git components are pinned to their remote HEAD.
-	latest bool
+	latest     bool
+	lockReplay bool
 	// Lock provenance, recorded in versions/<release>/manifest.json.
 	release     string
 	source      string // lock.SourceCatalog | lock.SourceLocal | lock.SourceLatest
@@ -130,12 +133,27 @@ func (o *Orchestrator) Install(ctx context.Context, release string, opts Options
 		return version.Result{}, err
 	}
 
+	inst := &version.Installer{Root: o.Root}
+	if opts.Force && inst.IsInstalled(release) && !opts.Latest {
+		// Legacy releases installed before #78 have no lock; preserve their
+		// previous manifest/catalog fallback. A present but unreadable lock is
+		// not treated as legacy because that could silently change versions.
+		l, err := lock.Read(inst.ReleaseDir(release))
+		if err != nil && !errors.Is(err, lock.ErrNotLocked) {
+			return version.Result{}, fmt.Errorf("install: cannot force-reinstall from lock: %w", err)
+		}
+		if err == nil {
+			if l.Release != release {
+				return version.Result{}, fmt.Errorf("install: lock release %q does not match requested release %q", l.Release, release)
+			}
+			opts.locked = l
+		}
+	}
+
 	m, fromLocal, err := o.loadPlanManifest(release, opts)
 	if err != nil {
 		return version.Result{}, err
 	}
-
-	inst := &version.Installer{Root: o.Root}
 
 	// A --latest install would otherwise silently no-op on an already installed
 	// release; require --force so refreshing to latest versions is explicit.
@@ -152,17 +170,23 @@ func (o *Orchestrator) Install(ctx context.Context, release string, opts Options
 		return version.Result{Release: release, Path: inst.ReleaseDir(release)}, nil
 	}
 
+	// Resolve and preflight before Installer creates its staging directory. Keep
+	// the existing no-op path free of repository and package-index queries.
+	var planned *plan
+	if opts.Force || !inst.IsInstalled(release) {
+		planned, err = o.buildPlan(ctx, m, opts, release, fromLocal)
+		if err != nil {
+			return version.Result{}, err
+		}
+	}
+
 	var instOpts []version.Option
 	if opts.Force {
 		instOpts = append(instOpts, version.WithForce(true))
 	}
 
 	res, err := inst.Install(release, func(stagingDir string) error {
-		p, err := o.buildPlan(ctx, m, opts, release, fromLocal)
-		if err != nil {
-			return err
-		}
-		return o.stage(ctx, stagingDir, p)
+		return o.stage(ctx, stagingDir, planned)
 	}, instOpts...)
 	if err != nil {
 		return version.Result{}, err
@@ -191,6 +215,10 @@ func (o *Orchestrator) Install(ctx context.Context, release string, opts Options
 // releases.local/ (false means the catalog cache), which the lock records as
 // provenance.
 func (o *Orchestrator) loadPlanManifest(release string, opts Options) (*manifest.Manifest, bool, error) {
+	if opts.locked != nil {
+		m := &opts.locked.Manifest
+		return m, opts.locked.Source == lock.SourceLocal, nil
+	}
 	name := release
 	kind := "release"
 	if opts.Latest {
@@ -231,6 +259,16 @@ func (o *Orchestrator) buildPlan(ctx context.Context, m *manifest.Manifest, opts
 	if err := o.resolvePlanPackages(p); err != nil {
 		return nil, err
 	}
+	if opts.locked != nil {
+		if err := validateLockedPackages(p); err != nil {
+			return nil, err
+		}
+	}
+	if p.useSystem && !opts.DryRun {
+		if err := o.preflightPinnedPackages(ctx, p); err != nil {
+			return nil, err
+		}
+	}
 	if err := o.resolvePlanGit(ctx, p); err != nil {
 		return nil, err
 	}
@@ -263,7 +301,13 @@ func (o *Orchestrator) newPlan(m *manifest.Manifest, opts Options, release strin
 		m:             m,
 		osm:           osm,
 	}
-	if opts.Latest {
+	if opts.locked != nil {
+		p.lockReplay = true
+		p.source = opts.locked.Source
+		p.base = opts.locked.Base
+		p.catalogRepo = opts.locked.CatalogRepo
+		p.catalogRef = opts.locked.CatalogRef
+	} else if opts.Latest {
 		p.source = lock.SourceLatest
 		p.base = release
 		if opts.Base != "" {
@@ -274,7 +318,7 @@ func (o *Orchestrator) newPlan(m *manifest.Manifest, opts Options, release strin
 	} else {
 		p.source = lock.SourceCatalog
 	}
-	if !fromLocal {
+	if !fromLocal && opts.locked == nil {
 		// Best-effort: cite the catalog repository and ref the plan manifest
 		// was fetched from. A cache that predates the provenance record simply
 		// omits it.
@@ -296,6 +340,27 @@ func (o *Orchestrator) resolvePlanPackages(p *plan) error {
 	}
 	p.pipPackages, err = resolvePipPackages(p.m, p.latest)
 	return err
+}
+
+// validateLockedPackages ensures every resolved dependency in a replayed lock
+// has a concrete version. Optional absent packages are omitted by
+// resolveSystemPackages and therefore are not required here.
+func validateLockedPackages(p *plan) error {
+	for _, pkg := range p.systemPackages {
+		if pkg.Version == "" {
+			virtual := virtualForConcrete(p.osm, pkg.Name)
+			if virtual == "" {
+				virtual = pkg.Name
+			}
+			return fmt.Errorf("install: lock for release %s has no concrete version for system package %q", p.release, virtual)
+		}
+	}
+	for name, version := range p.pipPackages {
+		if version == "" {
+			return fmt.Errorf("install: lock for release %s has no concrete version for python package %q", p.release, name)
+		}
+	}
+	return nil
 }
 
 func (o *Orchestrator) resolvePlanGit(ctx context.Context, p *plan) error {
@@ -361,6 +426,7 @@ func (o *Orchestrator) finalizePlan(p *plan) error {
 // the lock is written before promotion and lands atomically with the rest of
 // the release.
 func (o *Orchestrator) stage(ctx context.Context, stagingDir string, p *plan) error {
+	o.logResolutionSummary(p)
 	if p.useSystem {
 		if err := o.installSystemPackages(ctx, p); err != nil {
 			return err
@@ -540,14 +606,169 @@ func (o *Orchestrator) provisionVenv(ctx context.Context, stagingDir string, p *
 		}
 		return nil
 	}
-	if err := prov.Provision(ctx, stagingDir, p.pipPackages); err != nil {
+	if err := prov.ProvisionResolved(ctx, stagingDir, p.pipPackages); err != nil {
 		return fmt.Errorf("install: provision virtualenv: %w", err)
 	}
 	return nil
 }
 
+// preflightPinnedPackages checks explicitly pinned versions before repository
+// setup or package installation. DNF is restricted to cached metadata and pip
+// disables its HTTP cache; pip still contacts configured indexes to query them.
+func (o *Orchestrator) preflightPinnedPackages(ctx context.Context, p *plan) error {
+	runner := o.Runner
+	if runner == nil {
+		runner = packagemanager.ExecRunner{}
+	}
+	for _, pkg := range p.systemPackages {
+		if pkg.Version == "" {
+			continue
+		}
+		var command string
+		var args []string
+		switch p.pkgManager {
+		case "apt":
+			command, args = "apt-cache", []string{"madison", pkg.Name}
+		case "dnf":
+			command, args = "dnf", []string{"--cacheonly", "repoquery", "--available", "--qf", "%{VERSION}-%{RELEASE}", pkg.Name}
+		default:
+			return fmt.Errorf("install: cannot preflight pinned packages for package manager %q", p.pkgManager)
+		}
+		out, err := runner.Run(ctx, command, args...)
+		if err != nil {
+			return fmt.Errorf("install: cannot verify pinned system package %s=%s against configured repositories: %w", pkg.Name, pkg.Version, err)
+		}
+		if !versionListed(string(out), pkg.Version) {
+			return fmt.Errorf("install: pinned system package %s=%s is not available in currently configured repositories (required repository may not be configured yet)", pkg.Name, pkg.Version)
+		}
+	}
+	for name, version := range p.pipPackages {
+		if version == "" {
+			continue
+		}
+		out, err := runner.Run(ctx, "python3", "-c", pipVersionPreflightScript, name, version)
+		if err != nil {
+			return fmt.Errorf("install: cannot verify pinned python package %s==%s from configured pip indexes: %w", name, version, err)
+		}
+		if strings.TrimSpace(string(out)) != "available" {
+			return fmt.Errorf("install: pinned python package %s==%s is not available from configured pip indexes", name, version)
+		}
+	}
+	return nil
+}
+
+// pipVersionPreflightScript queries the index without installing packages or
+// using pip's HTTP cache, then compares versions with pip's PEP 440 parser.
+// Including --pre prevents pip from hiding prereleases from the query.
+const pipVersionPreflightScript = `
+import re
+import subprocess
+import sys
+from pip._vendor.packaging.version import InvalidVersion, Version
+
+name, pin = sys.argv[1:3]
+result = subprocess.run(
+    [sys.executable, "-m", "pip", "--no-cache-dir", "index", "versions", "--pre", name],
+    capture_output=True, text=True,
+)
+if result.returncode:
+    sys.stderr.write(result.stderr)
+    raise SystemExit(result.returncode)
+match = re.search(r"(?m)^Available versions:\s*(.*)$", result.stdout)
+if not match:
+    raise SystemExit("pip index did not report available versions")
+try:
+    expected = Version(pin)
+except InvalidVersion:
+    raise SystemExit("pinned version is not valid PEP 440")
+for candidate in match.group(1).split(","):
+    try:
+        if Version(candidate.strip()) == expected:
+            print("available")
+            raise SystemExit(0)
+    except InvalidVersion:
+        pass
+raise SystemExit(1)
+`
+
+func versionListed(output, version string) bool {
+	for _, field := range strings.Fields(output) {
+		if strings.Trim(field, ",|[]") == version {
+			return true
+		}
+	}
+	return false
+}
+
+func (o *Orchestrator) logResolutionSummary(p *plan) {
+	mode := "manifest pins and current candidates"
+	if p.lockReplay {
+		mode = "installed lock replay"
+	} else if p.latest {
+		mode = "latest candidates"
+	}
+	o.logf("%s: package resolution: %s", p.release, mode)
+	unpinnedSystem := []string{}
+	pinnedSystem := []string{}
+	for _, pkg := range p.systemPackages {
+		if pkg.Version == "" {
+			unpinnedSystem = append(unpinnedSystem, pkg.Name)
+		} else {
+			pinnedSystem = append(pinnedSystem, pkg.Name+"="+pkg.Version)
+		}
+	}
+	if len(pinnedSystem) > 0 {
+		o.logf("  pinned system: %s", strings.Join(pinnedSystem, ", "))
+	}
+	if len(unpinnedSystem) > 0 {
+		o.logf("  unpinned system candidates: %s", strings.Join(unpinnedSystem, ", "))
+	}
+	pinnedPip, unpinnedPip := []string{}, []string{}
+	for name, ver := range p.pipPackages {
+		if ver == "" {
+			unpinnedPip = append(unpinnedPip, name)
+		} else {
+			pinnedPip = append(pinnedPip, name+"=="+ver)
+		}
+	}
+	sort.Strings(pinnedPip)
+	sort.Strings(unpinnedPip)
+	if len(pinnedPip) > 0 {
+		o.logf("  pinned pip: %s", strings.Join(pinnedPip, ", "))
+	}
+	if len(unpinnedPip) > 0 {
+		o.logf("  unpinned pip candidates: %s", strings.Join(unpinnedPip, ", "))
+	}
+	containerNames := make([]string, 0, len(p.containerRefs))
+	for name := range p.containerRefs {
+		containerNames = append(containerNames, name)
+	}
+	sort.Strings(containerNames)
+	for _, name := range containerNames {
+		o.logf("  container %s: %s", name, p.containerRefs[name])
+	}
+	if _, declared := p.m.SystemPackages["metalium"]; !declared {
+		o.logf("  optional metalium: skipped (not declared)")
+	} else {
+		concrete, _ := p.osm.ResolvePackage("metalium")
+		if !containsSystemPackage(p.systemPackages, concrete) {
+			o.logf("  optional metalium: skipped (not resolved or no version pin)")
+		}
+	}
+	o.logf("  resolved versions will be written to %s", filepath.Join("versions", p.release, lock.FileName))
+}
+
 // installSystemPackages configures required repositories and installs the
 // resolved system packages.
+func containsSystemPackage(packages []packagemanager.Package, name string) bool {
+	for _, pkg := range packages {
+		if pkg.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 func (o *Orchestrator) installSystemPackages(ctx context.Context, p *plan) error {
 	mgr, err := o.packageManager(p.pkgManager)
 	if err != nil {
@@ -667,6 +888,7 @@ func (o *Orchestrator) resolveOSManifest() (*manifest.OSManifest, string, error)
 
 // logDryRun logs the planned actions without performing them.
 func (o *Orchestrator) logDryRun(release string, p *plan) {
+	o.logResolutionSummary(p)
 	mode := ""
 	if p.latest {
 		mode = " (latest available versions)"
