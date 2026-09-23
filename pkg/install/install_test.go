@@ -308,17 +308,24 @@ func TestForceWithoutLockFallsBackToCurrentManifest(t *testing.T) {
 	}
 }
 
-func TestForceRejectsIncompleteLockBeforeMutation(t *testing.T) {
+func installedLockFixture(t *testing.T) (root, releaseDir string, l *lock.Lock, orch *Orchestrator) {
+	t.Helper()
 	root, osRelease := setupRoot(t)
-	orch := withProbes(&Orchestrator{Root: root, Runner: cloneAwareRunner(), OSReleasePath: osRelease, Logf: func(string, ...any) {}})
+	orch = withProbes(&Orchestrator{Root: root, Runner: cloneAwareRunner(), OSReleasePath: osRelease, Logf: func(string, ...any) {}})
 	if _, err := orch.Install(context.Background(), testRelease, Options{}); err != nil {
 		t.Fatalf("initial install: %v", err)
 	}
-	releaseDir := filepath.Join(root, "versions", testRelease)
-	l, err := lock.Read(releaseDir)
+	releaseDir = filepath.Join(root, "versions", testRelease)
+	var err error
+	l, err = lock.Read(releaseDir)
 	if err != nil {
 		t.Fatal(err)
 	}
+	return root, releaseDir, l, orch
+}
+
+func TestForceRejectsIncompleteLockBeforeMutation(t *testing.T) {
+	root, releaseDir, l, orch := installedLockFixture(t)
 	delete(l.SystemPackages, "cmake")
 	if err := lock.Write(releaseDir, l); err != nil {
 		t.Fatal(err)
@@ -337,16 +344,7 @@ func TestForceRejectsIncompleteLockBeforeMutation(t *testing.T) {
 }
 
 func TestForceRejectsLockForDifferentRelease(t *testing.T) {
-	root, osRelease := setupRoot(t)
-	orch := withProbes(&Orchestrator{Root: root, Runner: cloneAwareRunner(), OSReleasePath: osRelease, Logf: func(string, ...any) {}})
-	if _, err := orch.Install(context.Background(), testRelease, Options{}); err != nil {
-		t.Fatalf("initial install: %v", err)
-	}
-	releaseDir := filepath.Join(root, "versions", testRelease)
-	l, err := lock.Read(releaseDir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	_, releaseDir, l, orch := installedLockFixture(t)
 	l.Release = "2026.05.17"
 	if err := lock.Write(releaseDir, l); err != nil {
 		t.Fatal(err)

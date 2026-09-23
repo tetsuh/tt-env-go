@@ -4,12 +4,10 @@ import "github.com/tetsuh/tt-env-go/pkg/stackpolicy"
 
 // The Tenstorrent stack package policy is defined in pkg/stackpolicy and shared
 // with the capture engine. The aliases below keep the install code unchanged
-// while sourcing the ordered virtual-package list, the pinned and optional
-// subsets, and the pip-package list from the single shared definition.
+// while sourcing the ordered virtual-package list, optional subset, and pip
+// package list from the single shared definition.
 
 var systemVirtualPackages = stackpolicy.SystemVirtualPackages
-
-var pinnedVirtualPackages = stackpolicy.PinnedVirtualPackages
 
 var optionalVirtualPackages = stackpolicy.OptionalVirtualPackages
 

@@ -67,12 +67,13 @@ fetched catalog's provenance (repository and ref) in
 
 A catalog manifest states *intent* — which packages and versions an install
 should resolve. An ordinary catalog install resolves unpinned system and Python
-packages to the candidates available from configured repositories and indexes;
-every install records the resulting resolution in a lock at
-`versions/<release>/manifest.json`, written during staging so it appears
-atomically with the release. For an already-installed release, `--force` replays
-the lock's pins; use `--latest --force` to intentionally refresh package
-versions.
+packages to the candidates available from configured repositories and indexes.
+A non-dry-run install records the resulting resolution in a lock at
+`versions/<release>/manifest.json` only when it actually stages a release; the
+lock is written during staging so it appears atomically with the release. For
+an already-installed release, `--force` replays the pins from an existing lock.
+Legacy releases without a lock fall back to the manifest. Use
+`--latest --force` to intentionally refresh package versions.
 
 Before mutation, pinned system and Python package versions are checked against
 the currently configured repositories and indexes. DNF checks cached metadata
