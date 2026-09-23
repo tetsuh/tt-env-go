@@ -21,8 +21,13 @@ var installCmd = &cobra.Command{
 	Short: "Install a specific Tenstorrent stack release",
 	Long: `Downloads, processes, and installs dependencies for a Tenstorrent stack release.
 
-The resolved versions are recorded in a lock at versions/<release>/manifest.json
-so every installed release is self-describing.
+Unpinned system and Python packages resolve to candidates from configured
+repositories and indexes. Resolved versions are recorded in a lock at
+versions/<release>/manifest.json. On an already-installed release, --force
+replays the lock's pins; use --latest --force to intentionally refresh package
+versions. Pinned package availability is checked before mutation against
+configured repositories and indexes. DNF uses cached metadata only, so a
+required repository that is not yet configured can block installation.
 
 With --latest, installs the latest available versions (unpinned system and
 Python packages, git components at their remote HEAD) instead of the pinned

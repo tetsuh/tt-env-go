@@ -66,12 +66,23 @@ fetched catalog's provenance (repository and ref) in
 ## Install-time locks
 
 A catalog manifest states *intent* — which packages and versions an install
-should resolve. Every `tt-env install` also records *resolution* in a lock at
+should resolve. An ordinary catalog install resolves unpinned system and Python
+packages to the candidates available from configured repositories and indexes;
+every install records the resulting resolution in a lock at
 `versions/<release>/manifest.json`, written during staging so it appears
-atomically with the release:
+atomically with the release. For an already-installed release, `--force` replays
+the lock's pins; use `--latest --force` to intentionally refresh package
+versions.
 
-- concrete system-package and Python versions (pins as installed; unpinned and
-  `--latest` entries probed after installation, reusing the capture probes),
+Before mutation, pinned system and Python package versions are checked against
+the currently configured repositories and indexes. DNF checks cached metadata
+only, and a required repository that is not yet configured can make a pinned
+version appear unavailable and block installation.
+
+The lock records:
+
+- concrete system-package and Python versions (pinned versions and resolved
+  candidates),
 - git components at their resolved revisions (remote HEAD for `--latest`),
 - the container components as installed, and
 - provenance: `source` (`catalog` | `local` | `latest`), the `base` for a

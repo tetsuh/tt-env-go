@@ -9,9 +9,9 @@ import (
 
 // resolveSystemPackages maps the ordered virtual system packages to concrete
 // packages using the OS manifest, carrying version pins from the stack
-// manifest. It mirrors proto1's _package_manager_resolved_packages: optional
-// packages are skipped when unresolved or unpinned, pinned packages require a
-// version, and the remaining packages may be installed unpinned.
+// manifest. Optional packages are skipped when unresolved or unpinned; other
+// resolved packages may be installed unpinned unless their manifest entry
+// supplies a version.
 func resolveSystemPackages(osm *manifest.OSManifest, m *manifest.Manifest, latest bool) ([]packagemanager.Package, error) {
 	var pkgs []packagemanager.Package
 	for _, virtual := range systemVirtualPackages {
@@ -44,9 +44,6 @@ func resolveSystemPackages(osm *manifest.OSManifest, m *manifest.Manifest, lates
 			if optionalVirtualPackages[virtual] {
 				continue
 			}
-			if pinnedVirtualPackages[virtual] {
-				return nil, fmt.Errorf("install: stack manifest missing system package version: system_packages.%s", virtual)
-			}
 			// Unpinned package (cmake/ninja/zlib): install without a version.
 		}
 
@@ -59,10 +56,9 @@ func resolveSystemPackages(osm *manifest.OSManifest, m *manifest.Manifest, lates
 	return pkgs, nil
 }
 
-// resolvePipPackages maps the ordered pip packages to their pinned versions from
-// the stack manifest. Every pip package must be pinned, mirroring proto1's
-// _package_manager_resolved_pip_packages. In latest mode the versions are left
-// empty so the venv provisioner installs them unpinned.
+// resolvePipPackages maps the ordered pip packages to versions from the stack
+// manifest. Empty versions are resolved by pip and recorded in the lock. In
+// latest mode all versions are deliberately empty.
 func resolvePipPackages(m *manifest.Manifest, latest bool) (map[string]string, error) {
 	out := make(map[string]string, len(pipPackages))
 	for _, name := range pipPackages {
@@ -70,11 +66,7 @@ func resolvePipPackages(m *manifest.Manifest, latest bool) (map[string]string, e
 			out[name] = ""
 			continue
 		}
-		version := m.PythonPackages[name]
-		if version == "" {
-			return nil, fmt.Errorf("install: stack manifest missing python package version: python_packages.%s", name)
-		}
-		out[name] = version
+		out[name] = m.PythonPackages[name]
 	}
 	return out, nil
 }
