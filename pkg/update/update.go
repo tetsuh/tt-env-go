@@ -10,6 +10,7 @@ package update
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -121,7 +122,7 @@ func (u *Updater) Update(ctx context.Context) (Result, error) {
 		return Result{}, err
 	}
 
-	if err := u.apply(set); err != nil {
+	if err := u.apply(set, repo, ref); err != nil {
 		return Result{}, err
 	}
 
@@ -132,6 +133,64 @@ func (u *Updater) Update(ctx context.Context) (Result, error) {
 		OSManifestCount: len(set.osManifests),
 		Migrated:        migrated,
 	}, nil
+}
+
+// catalogSource is the provenance record of the last catalog fetch, written to
+// manifests/catalog_source.json.
+type catalogSource struct {
+	Repo      string    `json:"repo"`
+	Ref       string    `json:"ref"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// catalogSourceName is the file the catalog provenance is recorded in.
+const catalogSourceName = "catalog_source.json"
+
+// writeCatalogSource records the catalog provenance into the staged manifests
+// directory so install-time locks can cite the exact repository and ref the
+// fetched manifests came from.
+func writeCatalogSource(dir string, src catalogSource) error {
+	data, err := json.MarshalIndent(src, "", "  ")
+	if err != nil {
+		return fmt.Errorf("update: marshal catalog source: %w", err)
+	}
+	data = append(data, '\n')
+	if err := os.WriteFile(filepath.Join(dir, catalogSourceName), data, 0o644); err != nil {
+		return fmt.Errorf("update: write catalog source: %w", err)
+	}
+	return nil
+}
+
+// CatalogSource describes the provenance of the last catalog fetch under root.
+type CatalogSource struct {
+	// Repo and Ref are the GitHub repository and ref the manifests came from.
+	Repo string
+	// Ref is the git ref (branch, tag, or SHA) the manifests came from.
+	Ref string
+	// UpdatedAt is when the catalog was fetched.
+	UpdatedAt time.Time
+}
+
+// ReadCatalogSource reads the provenance of the last catalog fetch from
+// root/manifests/catalog_source.json. It returns ok=false when the record is
+// absent (for example, the cache predates this record); a present but
+// unreadable or invalid record is an error.
+func ReadCatalogSource(root string) (CatalogSource, bool, error) {
+	data, err := os.ReadFile(filepath.Join(root, "manifests", catalogSourceName))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return CatalogSource{}, false, nil
+		}
+		return CatalogSource{}, false, fmt.Errorf("update: read catalog source: %w", err)
+	}
+	var src catalogSource
+	if err := json.Unmarshal(data, &src); err != nil {
+		return CatalogSource{}, false, fmt.Errorf("update: parse catalog source: %w", err)
+	}
+	if src.Repo == "" || src.Ref == "" {
+		return CatalogSource{}, false, fmt.Errorf("update: catalog source record is incomplete: %+v", src)
+	}
+	return CatalogSource{Repo: src.Repo, Ref: src.Ref, UpdatedAt: src.UpdatedAt}, true, nil
 }
 
 func (u *Updater) now() time.Time {
@@ -162,7 +221,7 @@ func (u *Updater) acquireLock() (string, error) {
 // apply stages the extracted manifests, writes the update marker, and swaps
 // the new directories into place. The caller must already hold the update
 // lock.
-func (u *Updater) apply(set *manifestSet) error {
+func (u *Updater) apply(set *manifestSet, repo, ref string) error {
 	tmpRoot := filepath.Join(u.Root, ".tmp")
 
 	work, err := os.MkdirTemp(tmpRoot, "update-")
@@ -180,11 +239,19 @@ func (u *Updater) apply(set *manifestSet) error {
 		return err
 	}
 
-	// Write the marker into the staged manifests directory so it lands together
-	// with the swap; a separate post-swap write could fail after the swap.
+	// Write the marker and the catalog provenance into the staged manifests
+	// directory so they land together with the swap; a separate post-swap write
+	// could fail after the swap.
 	marker := strconv.FormatInt(u.now().Unix(), 10) + "\n"
 	if err := os.WriteFile(filepath.Join(stagingManifests, "last_update"), []byte(marker), 0o644); err != nil {
 		return fmt.Errorf("update: write update marker: %w", err)
+	}
+	if err := writeCatalogSource(stagingManifests, catalogSource{
+		Repo:      repo,
+		Ref:       ref,
+		UpdatedAt: u.now().UTC(),
+	}); err != nil {
+		return err
 	}
 
 	backup := filepath.Join(work, "backup")

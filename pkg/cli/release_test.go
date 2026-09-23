@@ -6,7 +6,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/tetsuh/tt-env-go/pkg/lock"
+	"github.com/tetsuh/tt-env-go/pkg/manifest"
 	"github.com/tetsuh/tt-env-go/pkg/version"
 )
 
@@ -294,5 +297,78 @@ func TestDiffCommandArgs(t *testing.T) {
 	}
 	if err := diffCmd.Args(diffCmd, []string{"a", "b"}); err != nil {
 		t.Errorf("expected diff to accept exactly two arguments, got %v", err)
+	}
+}
+
+// installLockedRelease installs a release and writes a lock whose resolved
+// versions differ from the catalog manifest, so list/diff behavior on locks
+// can be asserted.
+func installLockedRelease(t *testing.T, root, release string) {
+	t.Helper()
+	installRelease(t, root, release)
+	l := &lock.Lock{
+		Manifest: manifest.Manifest{
+			Release:             release,
+			Components:          map[string]manifest.Component{"tt-kmd": {Version: "ttkmd-9.9.9"}},
+			SystemPackages:      map[string]string{"kmd": "9.9.9"},
+			PythonPackages:      map[string]string{"tt-smi": "9.9.9"},
+			GitComponents:       map[string]manifest.GitComponent{},
+			ContainerComponents: map[string]manifest.ContainerComponent{},
+		},
+		Source:      lock.SourceCatalog,
+		CatalogRepo: "tetsuh/tt-env-manifests",
+		CatalogRef:  "main",
+		InstalledAt: time.Date(2026, 9, 23, 10, 0, 0, 0, time.UTC),
+	}
+	if err := lock.Write(filepath.Join(root, "versions", release), l); err != nil {
+		t.Fatalf("lock.Write: %v", err)
+	}
+}
+
+func TestListCommandShowsLockProvenance(t *testing.T) {
+	root := t.TempDir()
+	installLockedRelease(t, root, "2026.04.01")
+	writeManifest(t, filepath.Join(root, "releases"), "a.json", `{"release":"2026.04.01"}`)
+	t.Setenv("TT_HOME", root)
+
+	out := new(bytes.Buffer)
+	listCmd.SetOut(out)
+	t.Cleanup(func() { listCmd.SetOut(nil) })
+
+	if err := runList(listCmd); err != nil {
+		t.Fatalf("runList() error = %v", err)
+	}
+	want := "2026.04.01 (from catalog tetsuh/tt-env-manifests@main, resolved 2026-09-23) [installed]"
+	if !strings.Contains(out.String(), want) {
+		t.Errorf("list output missing %q\n%s", want, out.String())
+	}
+}
+
+func TestDiffCommandUsesInstalledLock(t *testing.T) {
+	root := t.TempDir()
+	installLockedRelease(t, root, "2026.04.01")
+	writeManifest(t, filepath.Join(root, "releases"), "2026.04.01.json",
+		`{"release":"2026.04.01","system_packages":{"kmd":"1.0.0"}}`)
+	writeManifest(t, filepath.Join(root, "releases"), "2026.05.16.json",
+		`{"release":"2026.05.16","system_packages":{"kmd":"2.0.0"}}`)
+	t.Setenv("TT_HOME", root)
+
+	buf := new(bytes.Buffer)
+	diffCmd.SetOut(buf)
+	t.Cleanup(func() { diffCmd.SetOut(nil) })
+
+	// The installed side resolves to its lock, so the diff compares the
+	// resolved 9.9.9 against the catalog 2.0.0, not the catalog 1.0.0.
+	if err := runDiff(diffCmd, "2026.04.01", "2026.05.16"); err != nil {
+		t.Fatalf("runDiff() error = %v", err)
+	}
+	got := buf.String()
+	for _, want := range []string{"9.9.9", "2.0.0"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("diff output missing %q\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "1.0.0") {
+		t.Errorf("diff must use the installed lock, not the catalog manifest\n%s", got)
 	}
 }

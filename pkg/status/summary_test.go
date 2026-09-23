@@ -7,8 +7,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tetsuh/tt-env-go/pkg/kmd"
+	"github.com/tetsuh/tt-env-go/pkg/lock"
+	"github.com/tetsuh/tt-env-go/pkg/manifest"
 	packagemanager "github.com/tetsuh/tt-env-go/pkg/package_manager"
 	"github.com/tetsuh/tt-env-go/pkg/version"
 )
@@ -122,5 +125,56 @@ func TestReporterReport(t *testing.T) {
 	}
 	if !got.SecureBoot.Safe() {
 		t.Errorf("SecureBoot = %+v, want Safe", got.SecureBoot)
+	}
+}
+
+func TestSummaryRenderLockProvenance(t *testing.T) {
+	s := Summary{
+		InstalledReleases: []string{"2026.04.01", "2026.05.16"},
+		Locks: map[string]*lock.Lock{
+			// One release carries a lock, the other predates locks.
+			"2026.04.01": {
+				Manifest:    manifest.Manifest{Release: "2026.04.01"},
+				Source:      lock.SourceLatest,
+				Base:        "2026.04.01",
+				InstalledAt: time.Date(2026, 9, 23, 10, 0, 0, 0, time.UTC),
+			},
+		},
+	}
+	var b strings.Builder
+	if err := s.Render(&b); err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+	out := b.String()
+	want := "2026.04.01 (latest of base 2026.04.01, resolved 2026-09-23), 2026.05.16"
+	if !strings.Contains(out, want) {
+		t.Errorf("Render output missing %q\n%s", want, out)
+	}
+}
+
+func TestReporterReportReadsLocks(t *testing.T) {
+	root := t.TempDir()
+	inst := &version.Installer{Root: root}
+	if _, err := inst.Install("2026.05.16", func(string) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	l := &lock.Lock{
+		Manifest:    manifest.Manifest{Release: "2026.05.16"},
+		Source:      lock.SourceLocal,
+		InstalledAt: time.Date(2026, 9, 23, 10, 0, 0, 0, time.UTC),
+	}
+	if err := lock.Write(inst.ReleaseDir("2026.05.16"), l); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &Reporter{
+		Detector:   &Detector{Runner: &packagemanager.MockRunner{}},
+		Installer:  inst,
+		SecureBoot: &kmd.SecureBootChecker{EFIDir: filepath.Join(t.TempDir(), "nonexistent")},
+		KMDVersion: &kmd.VersionProber{Runner: &packagemanager.MockRunner{}, SysModuleDir: t.TempDir()},
+	}
+	got := r.Report(context.Background())
+	if len(got.Locks) != 1 || got.Locks["2026.05.16"].Source != lock.SourceLocal {
+		t.Errorf("Locks = %+v, want one local lock for 2026.05.16", got.Locks)
 	}
 }

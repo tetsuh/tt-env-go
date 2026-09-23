@@ -30,7 +30,7 @@ var useCmd = &cobra.Command{
 var listCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all installed and available releases",
-	Long:  `Displays installed releases and all available releases from the catalog and from local manifests under releases.local/.`,
+	Long:  `Displays installed releases and all available releases from the catalog and from local manifests under releases.local/. Installed releases show the provenance recorded in their install-time lock (versions/<release>/manifest.json).`,
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runList(cmd)
@@ -41,7 +41,7 @@ var listCmd = &cobra.Command{
 var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show environment and hardware status",
-	Long:  `Probes and prints the active Tenstorrent environment version, installed releases, detected hardware, and KMD/Secure Boot state.`,
+	Long:  `Probes and prints the active Tenstorrent environment version, installed releases (with lock provenance), detected hardware, and KMD/Secure Boot state.`,
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runStatus(cmd)
@@ -66,7 +66,7 @@ var updateCmd = &cobra.Command{
 var diffCmd = &cobra.Command{
 	Use:   "diff <release-a> <release-b>",
 	Short: "Compare two release manifests",
-	Long:  `Displays differences in versions and dependencies between two Tenstorrent release manifests.`,
+	Long:  `Displays differences in versions and dependencies between two Tenstorrent release manifests. An installed release resolves to its lock (versions/<release>/manifest.json), so a diff can compare the actually installed versions against catalog intent.`,
 	Args:  cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runDiff(cmd, args[0], args[1])

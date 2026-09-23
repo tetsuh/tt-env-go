@@ -21,6 +21,9 @@ var installCmd = &cobra.Command{
 	Short: "Install a specific Tenstorrent stack release",
 	Long: `Downloads, processes, and installs dependencies for a Tenstorrent stack release.
 
+The resolved versions are recorded in a lock at versions/<release>/manifest.json
+so every installed release is self-describing.
+
 With --latest, installs the latest available versions (unpinned system and
 Python packages, git components at their remote HEAD) instead of the pinned
 versions in the manifest. Use --base to supply the release structure to follow

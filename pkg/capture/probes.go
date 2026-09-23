@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+
+	packagemanager "github.com/tetsuh/tt-env-go/pkg/package_manager"
 )
 
 // pipVersionRe constrains a captured PyPI/pip version to the characters proto1
@@ -28,14 +30,19 @@ func exitCode(err error) (int, bool) {
 	return 0, false
 }
 
-// defaultDpkgVersion returns the installed version of a dpkg package via
-// `dpkg-query`. The package status abbreviation is checked so that a package
-// left in a residual-config ("rc") or otherwise not-installed state yields
-// ("", false, nil). dpkg-query exits with code 1 when the package is unknown,
-// which is reported as not installed; any other failure (other exit codes,
-// missing binary, context cancellation) is returned as an error.
-func (c *Capturer) defaultDpkgVersion(ctx context.Context, name string) (string, bool, error) {
-	out, err := c.runner().Run(ctx, "dpkg-query", "-W", "-f=${db:Status-Abbrev} ${Version}", "--", name)
+// DpkgQuery returns the installed version of a dpkg package via
+// `dpkg-query`, executing the query through runner. The package status
+// abbreviation is checked so that a package left in a residual-config ("rc")
+// or otherwise not-installed state yields ("", false, nil). dpkg-query exits
+// with code 1 when the package is unknown, which is reported as not installed;
+// any other failure (other exit codes, missing binary, context cancellation)
+// is returned as an error. It is shared by the capture and install engines so
+// both probe installed versions identically.
+func DpkgQuery(ctx context.Context, runner packagemanager.CommandRunner, name string) (string, bool, error) {
+	if runner == nil {
+		runner = packagemanager.ExecRunner{}
+	}
+	out, err := runner.Run(ctx, "dpkg-query", "-W", "-f=${db:Status-Abbrev} ${Version}", "--", name)
 	if err != nil {
 		if code, ok := exitCode(err); ok && code == 1 {
 			return "", false, nil // package not found
@@ -55,12 +62,17 @@ func (c *Capturer) defaultDpkgVersion(ctx context.Context, name string) (string,
 	return version, true, nil
 }
 
-// defaultPipShowVersion returns the installed version of a pip package within
-// the given virtualenv python, parsing `pip show` output. `pip show` exits with
-// code 1 when the package is absent, which yields ("", false, nil); any other
-// failure to run pip is returned as an error.
-func (c *Capturer) defaultPipShowVersion(ctx context.Context, venvPython, pkg string) (string, bool, error) {
-	out, err := c.runner().Run(ctx, venvPython, "-m", "pip", "show", "--", pkg)
+// PipShow returns the installed version of a pip package within the given
+// virtualenv python, parsing `pip show` output executed through runner.
+// `pip show` exits with code 1 when the package is absent, which yields
+// ("", false, nil); any other failure to run pip is returned as an error. It
+// is shared by the capture and install engines so both probe installed
+// versions identically.
+func PipShow(ctx context.Context, runner packagemanager.CommandRunner, venvPython, pkg string) (string, bool, error) {
+	if runner == nil {
+		runner = packagemanager.ExecRunner{}
+	}
+	out, err := runner.Run(ctx, venvPython, "-m", "pip", "show", "--", pkg)
 	if err != nil {
 		if code, ok := exitCode(err); ok && code == 1 {
 			return "", false, nil // package not found

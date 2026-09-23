@@ -135,14 +135,14 @@ func (c *Capturer) dpkgVersion(ctx context.Context, name string) (string, bool, 
 	if c.DpkgVersion != nil {
 		return c.DpkgVersion(ctx, name)
 	}
-	return c.defaultDpkgVersion(ctx, name)
+	return DpkgQuery(ctx, c.runner(), name)
 }
 
 func (c *Capturer) pipShowVersion(ctx context.Context, venvPython, pkg string) (string, bool, error) {
 	if c.PipShowVersion != nil {
 		return c.PipShowVersion(ctx, venvPython, pkg)
 	}
-	return c.defaultPipShowVersion(ctx, venvPython, pkg)
+	return PipShow(ctx, c.runner(), venvPython, pkg)
 }
 
 func (c *Capturer) gitHead(ctx context.Context, repoDir string) (string, error) {
@@ -217,7 +217,7 @@ func (c *Capturer) Capture(ctx context.Context, release string, opts Options) (R
 	captured := &manifest.Manifest{
 		Release:             release,
 		Description:         captureDescription(release, baseRelease, probeRelease),
-		Components:          buildComponents(baseManifest, systemPackages, pythonPackages),
+		Components:          BuildComponents(baseManifest, systemPackages, pythonPackages),
 		SystemPackages:      systemPackages,
 		PythonPackages:      pythonPackages,
 		GitComponents:       gitComponents,
@@ -557,10 +557,12 @@ func (c *Capturer) httpClient() *http.Client {
 	return &http.Client{Timeout: 30 * time.Second}
 }
 
-// buildComponents seeds the components map from the base manifest and overrides
-// the kmd/smi entries with the freshly probed versions, mirroring proto1's
-// _capture_components while keeping the base tt-metal and firmware entries.
-func buildComponents(base *manifest.Manifest, systemPackages, pythonPackages map[string]string) map[string]manifest.Component {
+// BuildComponents seeds the components map from the base manifest and
+// overrides the kmd/smi entries with the freshly resolved versions, mirroring
+// proto1's _capture_components while keeping the base tt-metal and firmware
+// entries. It is shared with the install engine, which resolves the same
+// overrides when writing install-time locks.
+func BuildComponents(base *manifest.Manifest, systemPackages, pythonPackages map[string]string) map[string]manifest.Component {
 	out := make(map[string]manifest.Component, len(base.Components)+2)
 	for name, comp := range base.Components {
 		out[name] = comp

@@ -20,12 +20,16 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
+	"github.com/tetsuh/tt-env-go/pkg/capture"
 	"github.com/tetsuh/tt-env-go/pkg/catalog"
 	"github.com/tetsuh/tt-env-go/pkg/gitclone"
+	"github.com/tetsuh/tt-env-go/pkg/lock"
 	"github.com/tetsuh/tt-env-go/pkg/manifest"
 	packagemanager "github.com/tetsuh/tt-env-go/pkg/package_manager"
 	"github.com/tetsuh/tt-env-go/pkg/shims"
+	"github.com/tetsuh/tt-env-go/pkg/update"
 	"github.com/tetsuh/tt-env-go/pkg/venv"
 	"github.com/tetsuh/tt-env-go/pkg/version"
 )
@@ -50,6 +54,15 @@ type Orchestrator struct {
 	// creating bin links. When nil, the preferred system directories are
 	// searched. It exists primarily to make bin-link creation testable.
 	LookSystemCommand func(command string) (string, bool)
+	// Now supplies the install timestamp recorded in the lock; when nil,
+	// time.Now is used.
+	Now func() time.Time
+	// DpkgVersion and PipShowVersion probe installed versions to resolve
+	// unpinned or --latest packages in the lock. When nil, the runner-backed
+	// capture probes are used. They exist primarily to make lock resolution
+	// testable.
+	DpkgVersion    func(ctx context.Context, name string) (string, bool, error)
+	PipShowVersion func(ctx context.Context, venvPython, pkg string) (string, bool, error)
 }
 
 func (o *Orchestrator) logf(format string, args ...any) {
@@ -96,6 +109,16 @@ type plan struct {
 	// latest reports whether this is a --latest install: system and pip packages
 	// are installed unpinned and git components are pinned to their remote HEAD.
 	latest bool
+	// Lock provenance, recorded in versions/<release>/manifest.json.
+	release     string
+	source      string // lock.SourceCatalog | lock.SourceLocal | lock.SourceLatest
+	base        string // structure base for a --latest install
+	catalogRepo string
+	catalogRef  string
+	// m is the manifest the plan was resolved from (intent), and osm the
+	// resolved OS manifest; both feed the lock.
+	m   *manifest.Manifest
+	osm *manifest.OSManifest
 }
 
 // Install installs the named release. When opts.DryRun is true it resolves and
@@ -107,7 +130,7 @@ func (o *Orchestrator) Install(ctx context.Context, release string, opts Options
 		return version.Result{}, err
 	}
 
-	m, err := o.loadPlanManifest(release, opts)
+	m, fromLocal, err := o.loadPlanManifest(release, opts)
 	if err != nil {
 		return version.Result{}, err
 	}
@@ -121,7 +144,7 @@ func (o *Orchestrator) Install(ctx context.Context, release string, opts Options
 	}
 
 	if opts.DryRun {
-		p, err := o.buildPlan(ctx, m, opts.Latest)
+		p, err := o.buildPlan(ctx, m, opts, release, fromLocal)
 		if err != nil {
 			return version.Result{}, err
 		}
@@ -135,7 +158,7 @@ func (o *Orchestrator) Install(ctx context.Context, release string, opts Options
 	}
 
 	res, err := inst.Install(release, func(stagingDir string) error {
-		p, err := o.buildPlan(ctx, m, opts.Latest)
+		p, err := o.buildPlan(ctx, m, opts, release, fromLocal)
 		if err != nil {
 			return err
 		}
@@ -164,8 +187,10 @@ func (o *Orchestrator) Install(ctx context.Context, release string, opts Options
 // normal install this is the release's own manifest; for a --latest install it
 // is opts.Base (defaulting to the release), used only for its structure.
 // Both lookups search the local manifest directory first (local overrides
-// catalog).
-func (o *Orchestrator) loadPlanManifest(release string, opts Options) (*manifest.Manifest, error) {
+// catalog). The second return value reports whether the manifest came from
+// releases.local/ (false means the catalog cache), which the lock records as
+// provenance.
+func (o *Orchestrator) loadPlanManifest(release string, opts Options) (*manifest.Manifest, bool, error) {
 	name := release
 	kind := "release"
 	if opts.Latest {
@@ -173,30 +198,32 @@ func (o *Orchestrator) loadPlanManifest(release string, opts Options) (*manifest
 		if base == "" {
 			base = release
 		} else if err := version.ValidateRelease(base); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		name, kind = base, "base"
 	}
 
-	manifestPath, _, err := catalog.Path(o.Root, name)
+	manifestPath, fromLocal, err := catalog.Path(o.Root, name)
 	if err != nil {
-		return nil, fmt.Errorf("install: resolve %s manifest: %w", kind, err)
+		return nil, false, fmt.Errorf("install: resolve %s manifest: %w", kind, err)
 	}
 	m, err := manifest.Load(manifestPath)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if m.Release != name {
-		return nil, fmt.Errorf("install: %s manifest %s declares %q, expected %q", kind, manifestPath, m.Release, name)
+		return nil, false, fmt.Errorf("install: %s manifest %s declares %q, expected %q", kind, manifestPath, m.Release, name)
 	}
-	return m, nil
+	return m, fromLocal, nil
 }
 
 // buildPlan resolves the OS manifest and the concrete system/pip packages, git
-// components, and container wrappers for the release. When latest is true,
-// system and pip packages are installed unpinned and git components are pinned
-// to their remote HEAD.
-func (o *Orchestrator) buildPlan(ctx context.Context, m *manifest.Manifest, latest bool) (*plan, error) {
+// components, and container wrappers for the release. When opts.Latest is
+// true, system and pip packages are installed unpinned and git components are
+// pinned to their remote HEAD. It also records the lock provenance: the
+// release being installed, where the plan manifest came from, and, for a
+// --latest install, its structural base.
+func (o *Orchestrator) buildPlan(ctx context.Context, m *manifest.Manifest, opts Options, release string, fromLocal bool) (*plan, error) {
 	osm, key, err := o.resolveOSManifest()
 	if err != nil {
 		return nil, err
@@ -212,15 +239,40 @@ func (o *Orchestrator) buildPlan(ctx context.Context, m *manifest.Manifest, late
 		pkgManager:    pkgManager,
 		useSystem:     osm.UseSystemPackages(),
 		requiredRepos: osm.RequiredRepos(),
-		latest:        latest,
+		latest:        opts.Latest,
+		release:       release,
+		m:             m,
+		osm:           osm,
+	}
+	switch {
+	case opts.Latest:
+		p.source = lock.SourceLatest
+		p.base = release
+		if opts.Base != "" {
+			p.base = opts.Base
+		}
+	default:
+		if fromLocal {
+			p.source = lock.SourceLocal
+		} else {
+			p.source = lock.SourceCatalog
+		}
+	}
+	if !fromLocal {
+		// Best-effort: cite the catalog repository and ref the plan manifest
+		// was fetched from. A cache that predates the provenance record simply
+		// omits it.
+		if src, ok, err := update.ReadCatalogSource(o.Root); err == nil && ok {
+			p.catalogRepo, p.catalogRef = src.Repo, src.Ref
+		}
 	}
 
 	if p.useSystem {
-		p.systemPackages, err = resolveSystemPackages(osm, m, latest)
+		p.systemPackages, err = resolveSystemPackages(osm, m, p.latest)
 		if err != nil {
 			return nil, err
 		}
-		p.pipPackages, err = resolvePipPackages(m, latest)
+		p.pipPackages, err = resolvePipPackages(m, p.latest)
 		if err != nil {
 			return nil, err
 		}
@@ -232,7 +284,7 @@ func (o *Orchestrator) buildPlan(ctx context.Context, m *manifest.Manifest, late
 			return nil, err
 		}
 		ver := gc.Version
-		if latest {
+		if p.latest {
 			ver, err = (&gitclone.Cloner{Runner: o.Runner}).ResolveHead(ctx, gc.URL)
 			if err != nil {
 				return nil, fmt.Errorf("install: resolve latest revision for git component %q: %w", name, err)
@@ -279,7 +331,10 @@ func (o *Orchestrator) buildPlan(ctx context.Context, m *manifest.Manifest, late
 	return p, nil
 }
 
-// stage performs the install work into stagingDir.
+// stage performs the install work into stagingDir and records the resolved
+// lock manifest, so the promoted release tree is self-describing (issue #78):
+// the lock is written before promotion and lands atomically with the rest of
+// the release.
 func (o *Orchestrator) stage(ctx context.Context, stagingDir string, p *plan) error {
 	if p.useSystem {
 		if err := o.installSystemPackages(ctx, p); err != nil {
@@ -300,7 +355,134 @@ func (o *Orchestrator) stage(ctx context.Context, stagingDir string, p *plan) er
 	if err := o.installGitComponents(ctx, stagingDir, p); err != nil {
 		return err
 	}
-	return o.installContainerComponents(stagingDir, p)
+	if err := o.installContainerComponents(stagingDir, p); err != nil {
+		return err
+	}
+	return o.writeLock(ctx, stagingDir, p)
+}
+
+// writeLock resolves the concrete versions that were just installed and writes
+// them, with provenance, to stagingDir/manifest.json. Pinned entries record
+// their pins (apt/dnf and pip install exactly those); unpinned and --latest
+// entries are probed after installation, reusing the capture engine's probes.
+func (o *Orchestrator) writeLock(ctx context.Context, stagingDir string, p *plan) error {
+	systemPackages, err := o.resolvedSystemPackages(ctx, p)
+	if err != nil {
+		return err
+	}
+	pythonPackages, err := o.resolvedPipPackages(ctx, stagingDir, p)
+	if err != nil {
+		return err
+	}
+
+	gitComponents := make(map[string]manifest.GitComponent, len(p.gitComponents))
+	for name, gc := range p.gitComponents {
+		gitComponents[name] = manifest.GitComponent{URL: gc.URL, Version: gc.Version}
+	}
+
+	l := &lock.Lock{
+		Manifest: manifest.Manifest{
+			Release:             p.release,
+			Description:         p.m.Description,
+			Components:          capture.BuildComponents(p.m, systemPackages, pythonPackages),
+			SystemPackages:      systemPackages,
+			PythonPackages:      pythonPackages,
+			GitComponents:       gitComponents,
+			ContainerComponents: p.m.ContainerComponents,
+		},
+		Source:      p.source,
+		Base:        p.base,
+		CatalogRepo: p.catalogRepo,
+		CatalogRef:  p.catalogRef,
+		InstalledAt: o.now().UTC(),
+	}
+	if err := lock.Write(stagingDir, l); err != nil {
+		return fmt.Errorf("install: record lock for release %s: %w", p.release, err)
+	}
+	o.logf("Recorded resolved versions in %s", lock.Path(stagingDir))
+	return nil
+}
+
+// resolvedSystemPackages maps the virtual system package names to the versions
+// that were installed: the pin when the plan carried one, otherwise the
+// probed installed version (unpinned and --latest installs).
+func (o *Orchestrator) resolvedSystemPackages(ctx context.Context, p *plan) (map[string]string, error) {
+	out := make(map[string]string, len(p.systemPackages))
+	for _, pkg := range p.systemPackages {
+		virtual := virtualForConcrete(p.osm, pkg.Name)
+		if virtual == "" {
+			continue
+		}
+		version := pkg.Version
+		if version == "" {
+			ver, installed, err := o.dpkgVersion(ctx, pkg.Name)
+			if err != nil {
+				return nil, fmt.Errorf("install: probe installed version of %q for the lock: %w", pkg.Name, err)
+			}
+			if !installed {
+				return nil, fmt.Errorf("install: system package %q (%s) is not installed after the install step", virtual, pkg.Name)
+			}
+			version = ver
+		}
+		out[virtual] = version
+	}
+	return out, nil
+}
+
+// resolvedPipPackages maps the pip package names to the versions that were
+// installed: the pin when the plan carried one, otherwise the version probed
+// from the staging virtualenv (--latest installs).
+func (o *Orchestrator) resolvedPipPackages(ctx context.Context, stagingDir string, p *plan) (map[string]string, error) {
+	out := make(map[string]string, len(p.pipPackages))
+	venvPython := filepath.Join(stagingDir, "venv", "bin", "python")
+	for name, pinned := range p.pipPackages {
+		version := pinned
+		if version == "" {
+			ver, installed, err := o.pipShowVersion(ctx, venvPython, name)
+			if err != nil {
+				return nil, fmt.Errorf("install: probe installed version of python package %q for the lock: %w", name, err)
+			}
+			if !installed {
+				return nil, fmt.Errorf("install: python package %q is not installed in the staging virtualenv", name)
+			}
+			version = ver
+		}
+		out[name] = version
+	}
+	return out, nil
+}
+
+// virtualForConcrete maps a concrete package name back to the virtual system
+// package name it was resolved from, or "" when the OS manifest does not
+// define it.
+func virtualForConcrete(osm *manifest.OSManifest, concrete string) string {
+	for _, virtual := range systemVirtualPackages {
+		if name, ok := osm.ResolvePackage(virtual); ok && name == concrete {
+			return virtual
+		}
+	}
+	return ""
+}
+
+func (o *Orchestrator) now() time.Time {
+	if o.Now != nil {
+		return o.Now()
+	}
+	return time.Now()
+}
+
+func (o *Orchestrator) dpkgVersion(ctx context.Context, name string) (string, bool, error) {
+	if o.DpkgVersion != nil {
+		return o.DpkgVersion(ctx, name)
+	}
+	return capture.DpkgQuery(ctx, o.Runner, name)
+}
+
+func (o *Orchestrator) pipShowVersion(ctx context.Context, venvPython, pkg string) (string, bool, error) {
+	if o.PipShowVersion != nil {
+		return o.PipShowVersion(ctx, venvPython, pkg)
+	}
+	return capture.PipShow(ctx, o.Runner, venvPython, pkg)
 }
 
 // provisionVenv creates the staging virtualenv and installs the resolved pip
@@ -482,4 +664,5 @@ func (o *Orchestrator) logDryRun(release string, p *plan) {
 		o.logf("[dry-run] Would create container component wrapper for %s using image %s", name, ref)
 	}
 	o.logf("[dry-run] Would create version directory for %s", release)
+	o.logf("[dry-run] Would record the resolved versions in %s", filepath.Join("versions", release, lock.FileName))
 }

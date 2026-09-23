@@ -481,3 +481,30 @@ func TestClassifyEntry(t *testing.T) {
 		}
 	}
 }
+
+func TestUpdateRecordsCatalogSource(t *testing.T) {
+	root := t.TempDir()
+	res := fetchCatalog(t, root, map[string]string{"a.json": `{"release":"a"}`})
+	if res.Repo == "" || res.Ref == "" {
+		t.Fatalf("update result lacks source: %+v", res)
+	}
+
+	src, ok, err := ReadCatalogSource(root)
+	if err != nil || !ok {
+		t.Fatalf("ReadCatalogSource() = %v ok=%v err=%v", src, ok, err)
+	}
+	if src.Repo != DefaultRepo || src.Ref != DefaultRef {
+		t.Errorf("catalog source = %s@%s, want %s@%s", src.Repo, src.Ref, DefaultRepo, DefaultRef)
+	}
+	if src.UpdatedAt.IsZero() {
+		t.Error("catalog source updated_at is zero")
+	}
+}
+
+func TestReadCatalogSourceAbsent(t *testing.T) {
+	// A cache that predates the provenance record reports absent, not corrupt.
+	_, ok, err := ReadCatalogSource(t.TempDir())
+	if err != nil || ok {
+		t.Errorf("ReadCatalogSource() ok=%v err=%v, want ok=false nil", ok, err)
+	}
+}
