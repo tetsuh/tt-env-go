@@ -63,6 +63,6 @@ func init() {
 	captureCmd.Flags().BoolVar(&captureDryRun, "dry-run", false, "print the captured manifest without writing it")
 	captureCmd.Flags().BoolVar(&captureForce, "force", false, "overwrite an existing local manifest")
 	captureCmd.Flags().StringVar(&captureBase, "base", "", "use an existing release manifest as the capture template")
-	captureCmd.Flags().StringVar(&captureFrom, "from", "", "probe this installed release tree instead of the base (e.g. one staged by 'install --latest')")
+	captureCmd.Flags().StringVar(&captureFrom, "from", "", "probe this installed release tree instead of the base (e.g. one staged by 'install --upgrade')")
 	RootCmd.AddCommand(captureCmd)
 }
