@@ -224,11 +224,30 @@ func (o *Orchestrator) loadPlanManifest(release string, opts Options) (*manifest
 // release being installed, where the plan manifest came from, and, for a
 // --latest install, its structural base.
 func (o *Orchestrator) buildPlan(ctx context.Context, m *manifest.Manifest, opts Options, release string, fromLocal bool) (*plan, error) {
+	p, err := o.newPlan(m, opts, release, fromLocal)
+	if err != nil {
+		return nil, err
+	}
+	if err := o.resolvePlanPackages(p); err != nil {
+		return nil, err
+	}
+	if err := o.resolvePlanGit(ctx, p); err != nil {
+		return nil, err
+	}
+	if err := resolvePlanContainers(p); err != nil {
+		return nil, err
+	}
+	if err := o.finalizePlan(p); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+func (o *Orchestrator) newPlan(m *manifest.Manifest, opts Options, release string, fromLocal bool) (*plan, error) {
 	osm, key, err := o.resolveOSManifest()
 	if err != nil {
 		return nil, err
 	}
-
 	pkgManager := osm.PackageManager()
 	if pkgManager == "" {
 		return nil, fmt.Errorf("install: OS manifest %s does not define PKG_MANAGER", key)
@@ -244,19 +263,16 @@ func (o *Orchestrator) buildPlan(ctx context.Context, m *manifest.Manifest, opts
 		m:             m,
 		osm:           osm,
 	}
-	switch {
-	case opts.Latest:
+	if opts.Latest {
 		p.source = lock.SourceLatest
 		p.base = release
 		if opts.Base != "" {
 			p.base = opts.Base
 		}
-	default:
-		if fromLocal {
-			p.source = lock.SourceLocal
-		} else {
-			p.source = lock.SourceCatalog
-		}
+	} else if fromLocal {
+		p.source = lock.SourceLocal
+	} else {
+		p.source = lock.SourceCatalog
 	}
 	if !fromLocal {
 		// Best-effort: cite the catalog repository and ref the plan manifest
@@ -266,51 +282,63 @@ func (o *Orchestrator) buildPlan(ctx context.Context, m *manifest.Manifest, opts
 			p.catalogRepo, p.catalogRef = src.Repo, src.Ref
 		}
 	}
+	return p, nil
+}
 
-	if p.useSystem {
-		p.systemPackages, err = resolveSystemPackages(osm, m, p.latest)
-		if err != nil {
-			return nil, err
-		}
-		p.pipPackages, err = resolvePipPackages(m, p.latest)
-		if err != nil {
-			return nil, err
-		}
+func (o *Orchestrator) resolvePlanPackages(p *plan) error {
+	if !p.useSystem {
+		return nil
 	}
+	var err error
+	p.systemPackages, err = resolveSystemPackages(p.osm, p.m, p.latest)
+	if err != nil {
+		return err
+	}
+	p.pipPackages, err = resolvePipPackages(p.m, p.latest)
+	return err
+}
 
-	p.gitComponents = make(map[string]gitclone.Component, len(m.GitComponents))
-	for name, gc := range m.GitComponents {
+func (o *Orchestrator) resolvePlanGit(ctx context.Context, p *plan) error {
+	p.gitComponents = make(map[string]gitclone.Component, len(p.m.GitComponents))
+	for name, gc := range p.m.GitComponents {
 		if err := validateComponentName(name); err != nil {
-			return nil, err
+			return err
 		}
-		ver := gc.Version
+		version := gc.Version
 		if p.latest {
-			ver, err = (&gitclone.Cloner{Runner: o.Runner}).ResolveHead(ctx, gc.URL)
+			resolved, err := (&gitclone.Cloner{Runner: o.Runner}).ResolveHead(ctx, gc.URL)
 			if err != nil {
-				return nil, fmt.Errorf("install: resolve latest revision for git component %q: %w", name, err)
+				return fmt.Errorf("install: resolve latest revision for git component %q: %w", name, err)
 			}
+			version = resolved
 		}
-		p.gitComponents[name] = gitclone.Component{URL: gc.URL, Version: ver}
+		p.gitComponents[name] = gitclone.Component{URL: gc.URL, Version: version}
 	}
+	return nil
+}
 
+func resolvePlanContainers(p *plan) error {
 	p.containerRefs = make(map[string]string)
-	for name, cc := range m.ContainerComponents {
+	for name, cc := range p.m.ContainerComponents {
 		// Ref-only components are capture/diff metadata; proto1's install only
 		// wraps components that declare an image URL.
 		if cc.ImageURL == "" {
 			continue
 		}
 		if err := validateComponentName(name); err != nil {
-			return nil, err
+			return err
 		}
 		ref := containerImageRef(cc.ImageURL, cc.ImageTag)
 		if err := validateImageRef(ref); err != nil {
-			return nil, err
+			return err
 		}
 		p.containerRefs[name] = ref
 	}
+	return nil
+}
 
-	p.components = m.Components
+func (o *Orchestrator) finalizePlan(p *plan) error {
+	p.components = p.m.Components
 	p.managedCommandNames = make(map[string]bool, len(p.gitComponents)+len(p.containerRefs))
 	for name := range p.gitComponents {
 		p.managedCommandNames[name] = true
@@ -323,12 +351,9 @@ func (o *Orchestrator) buildPlan(ctx context.Context, m *manifest.Manifest, opts
 	// download path, so validate the component download metadata up front; this
 	// lets the dry-run surface problems a real install would hit.
 	if !p.useSystem {
-		if err := validateDownloadComponents(p.components); err != nil {
-			return nil, err
-		}
+		return validateDownloadComponents(p.components)
 	}
-
-	return p, nil
+	return nil
 }
 
 // stage performs the install work into stagingDir and records the resolved
