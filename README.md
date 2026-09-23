@@ -99,10 +99,10 @@ The lock records:
   candidates),
 - git components at their resolved revisions (remote HEAD for `--upgrade`),
 - the container components as installed, and
-- provenance: `source` (`catalog` | `local` | `latest`), the `base` for a
-  `--upgrade` install (stored as `latest` for lock compatibility), the catalog
-  repository and ref when known, and the
-  install timestamp.
+- provenance: `source` (`catalog` | `local` | `latest`; an `--upgrade` install
+  keeps `latest` for lock compatibility), `base` (the selected template release,
+  including an explicit `--like` release), the catalog repository and ref when
+  known, and the install timestamp.
 
 `tt-env list` and `tt-env status` show this provenance. For example, `list`
 prints `2026.05.16 (from catalog tetsuh/tt-env-manifests@main, resolved

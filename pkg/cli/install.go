@@ -67,7 +67,7 @@ func installFlags(cmd *cobra.Command) (install.Options, error) {
 	if like == "" {
 		like = base
 	}
-	if like != "" && !(upgrade || latest) {
+	if like != "" && !upgrade && !latest {
 		return install.Options{}, fmt.Errorf("--like requires --upgrade (or its deprecated --latest alias)")
 	}
 	return install.Options{DryRun: dryRun, Force: force, Upgrade: upgrade || latest, Like: like}, nil
