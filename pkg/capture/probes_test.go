@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"strings"
 	"testing"
 
 	packagemanager "github.com/tetsuh/tt-env-go/pkg/package_manager"
@@ -64,6 +65,41 @@ func TestDefaultDpkgVersionPropagatesTransientError(t *testing.T) {
 	c := &Capturer{Runner: runner}
 	if _, _, err := DpkgQuery(context.Background(), c.runner(), "pkg"); err == nil {
 		t.Fatal("expected transient runner error to propagate, got nil")
+	}
+}
+
+func TestRpmQueryInstalledVersion(t *testing.T) {
+	runner := &packagemanager.MockRunner{}
+	runner.RunFunc = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name != "rpm" || strings.Join(args, " ") != "-q --qf %{VERSION}-%{RELEASE} -- pkg" {
+			t.Fatalf("rpm query = %s %v", name, args)
+		}
+		return []byte("1.2.3-4.fc42\n"), nil
+	}
+	version, installed, err := RpmQuery(context.Background(), runner, "pkg")
+	if err != nil || !installed || version != "1.2.3-4.fc42" {
+		t.Fatalf("RpmQuery() = %q, %v, %v", version, installed, err)
+	}
+}
+
+func TestRpmQueryNotInstalled(t *testing.T) {
+	runner := &packagemanager.MockRunner{}
+	runner.RunFunc = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		return []byte("package pkg is not installed\n"), runExit(t, 1)
+	}
+	version, installed, err := RpmQuery(context.Background(), runner, "pkg")
+	if err != nil || installed || version != "" {
+		t.Fatalf("RpmQuery() = %q, %v, %v; want absent", version, installed, err)
+	}
+}
+
+func TestRpmQueryPropagatesTransientError(t *testing.T) {
+	runner := &packagemanager.MockRunner{}
+	runner.RunFunc = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		return nil, context.Canceled
+	}
+	if _, _, err := RpmQuery(context.Background(), runner, "pkg"); err == nil {
+		t.Fatal("expected transient runner error to propagate")
 	}
 }
 

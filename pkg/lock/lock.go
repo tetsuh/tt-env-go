@@ -92,6 +92,10 @@ func Write(releaseDir string, l *Lock) error {
 		tmp.Close()
 		return fmt.Errorf("lock: chmod temp lock: %w", err)
 	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return fmt.Errorf("lock: sync temp lock: %w", err)
+	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("lock: close temp lock: %w", err)
 	}

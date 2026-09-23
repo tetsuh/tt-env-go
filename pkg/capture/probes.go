@@ -62,6 +62,28 @@ func DpkgQuery(ctx context.Context, runner packagemanager.CommandRunner, name st
 	return version, true, nil
 }
 
+// RpmQuery returns the installed version-release of an RPM package via
+// `rpm -q`. RPM exits with code 1 when the package is not installed, which is
+// reported as ("", false, nil); other failures are surfaced. It shares the
+// same installed/not-installed contract as DpkgQuery for DNF-backed installs.
+func RpmQuery(ctx context.Context, runner packagemanager.CommandRunner, name string) (string, bool, error) {
+	if runner == nil {
+		runner = packagemanager.ExecRunner{}
+	}
+	out, err := runner.Run(ctx, "rpm", "-q", "--qf", "%{VERSION}-%{RELEASE}", "--", name)
+	if err != nil {
+		if code, ok := exitCode(err); ok && code == 1 {
+			return "", false, nil // package not found
+		}
+		return "", false, fmt.Errorf("capture: rpm query %q: %w", name, err)
+	}
+	version := strings.TrimSpace(string(out))
+	if version == "" {
+		return "", false, nil
+	}
+	return version, true, nil
+}
+
 // PipShow returns the installed version of a pip package within the given
 // virtualenv python, parsing `pip show` output executed through runner.
 // `pip show` exits with code 1 when the package is absent, which yields

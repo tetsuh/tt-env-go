@@ -415,7 +415,7 @@ func (o *Orchestrator) resolvedSystemPackages(ctx context.Context, p *plan) (map
 		}
 		version := pkg.Version
 		if version == "" {
-			ver, installed, err := o.dpkgVersion(ctx, pkg.Name)
+			ver, installed, err := o.systemPackageVersion(ctx, p.pkgManager, pkg.Name)
 			if err != nil {
 				return nil, fmt.Errorf("install: probe installed version of %q for the lock: %w", pkg.Name, err)
 			}
@@ -469,6 +469,20 @@ func (o *Orchestrator) now() time.Time {
 		return o.Now()
 	}
 	return time.Now()
+}
+
+// systemPackageVersion probes an unpinned package with the query tool native
+// to the selected package manager. DpkgVersion remains injectable for apt; RPM
+// packages use the same rpm query implementation as the capture probes.
+func (o *Orchestrator) systemPackageVersion(ctx context.Context, manager, name string) (string, bool, error) {
+	switch manager {
+	case "apt":
+		return o.dpkgVersion(ctx, name)
+	case "dnf":
+		return capture.RpmQuery(ctx, o.Runner, name)
+	default:
+		return "", false, fmt.Errorf("install: cannot probe package version for unsupported package manager %q", manager)
+	}
 }
 
 func (o *Orchestrator) dpkgVersion(ctx context.Context, name string) (string, bool, error) {

@@ -190,7 +190,7 @@ func ReadCatalogSource(root string) (CatalogSource, bool, error) {
 	if src.Repo == "" || src.Ref == "" {
 		return CatalogSource{}, false, fmt.Errorf("update: catalog source record is incomplete: %+v", src)
 	}
-	return CatalogSource{Repo: src.Repo, Ref: src.Ref, UpdatedAt: src.UpdatedAt}, true, nil
+	return CatalogSource(src), true, nil
 }
 
 func (u *Updater) now() time.Time {

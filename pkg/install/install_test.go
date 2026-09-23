@@ -591,6 +591,33 @@ func TestInstallWritesLockLocalSource(t *testing.T) {
 	}
 }
 
+func TestSystemPackageVersionUsesManager(t *testing.T) {
+	calls := 0
+	runner := &packagemanager.MockRunner{}
+	runner.RunFunc = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name != "rpm" || strings.Join(args, " ") != "-q --qf %{VERSION}-%{RELEASE} -- cmake" {
+			t.Fatalf("dnf version query = %s %v", name, args)
+		}
+		return []byte("3.4-5.fc42\n"), nil
+	}
+	orch := &Orchestrator{
+		Runner: runner,
+		DpkgVersion: func(context.Context, string) (string, bool, error) {
+			calls++
+			return "apt-version", true, nil
+		},
+	}
+
+	version, installed, err := orch.systemPackageVersion(context.Background(), "apt", "cmake")
+	if err != nil || !installed || version != "apt-version" || calls != 1 {
+		t.Fatalf("apt systemPackageVersion() = %q, %v, %v (dpkg calls=%d)", version, installed, err, calls)
+	}
+	version, installed, err = orch.systemPackageVersion(context.Background(), "dnf", "cmake")
+	if err != nil || !installed || version != "3.4-5.fc42" || calls != 1 {
+		t.Fatalf("dnf systemPackageVersion() = %q, %v, %v (dpkg calls=%d)", version, installed, err, calls)
+	}
+}
+
 func TestInstallLockProbesReportNotInstalled(t *testing.T) {
 	root, osRelease := setupRoot(t)
 	orch := withProbes(&Orchestrator{Root: root, Runner: cloneAwareRunner(), OSReleasePath: osRelease, Logf: func(string, ...any) {}})

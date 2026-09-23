@@ -78,10 +78,12 @@ atomically with the release:
   `--latest` install, the catalog repository and ref when known, and the
   install timestamp.
 
-`tt-env list` and `tt-env status` show this provenance (e.g.
-`2026.05.16 [installed] (from catalog tetsuh/tt-env-manifests@main, resolved
-2026-09-23)`), and `tt-env diff` resolves an installed release to its lock, so
-a diff can compare the actually installed versions against catalog intent.
+`tt-env list` and `tt-env status` show this provenance. For example, `list`
+prints `2026.05.16 (from catalog tetsuh/tt-env-manifests@main, resolved
+2026-09-23) [installed]`; the `[installed]` marker is specific to `list` (the
+`status` command shows its own installed-release summary). `tt-env diff`
+resolves an installed release to its lock, so a diff can compare the actually
+installed versions against catalog intent.
 Releases installed before locks existed simply have no lock and fall back to
 the manifest catalog.
 
