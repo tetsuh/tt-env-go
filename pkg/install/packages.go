@@ -12,7 +12,7 @@ import (
 // manifest. Optional packages are skipped when unresolved or unpinned; other
 // resolved packages may be installed unpinned unless their manifest entry
 // supplies a version.
-func resolveSystemPackages(osm *manifest.OSManifest, m *manifest.Manifest, latest bool) ([]packagemanager.Package, error) {
+func resolveSystemPackages(osm *manifest.OSManifest, m *manifest.Manifest, upgrade bool) ([]packagemanager.Package, error) {
 	var pkgs []packagemanager.Package
 	for _, virtual := range systemVirtualPackages {
 		concrete, ok := osm.ResolvePackage(virtual)
@@ -23,13 +23,10 @@ func resolveSystemPackages(osm *manifest.OSManifest, m *manifest.Manifest, lates
 			return nil, fmt.Errorf("install: failed to resolve system package from OS manifest: %q", virtual)
 		}
 
-		// In --latest mode versions are intentionally unpinned so apt/dnf
-		// installs the candidate (latest) version; the exact installed version
-		// is recorded afterwards by capturing the environment. Optional packages
-		// still follow the base manifest structure: an optional package that the
-		// base does not declare is omitted so --latest does not pull in
-		// unintended system dependencies.
-		if latest {
+		// In upgrade mode apt/dnf selects current candidates, whose actual
+		// versions are then recorded in the install lock. Optional packages
+		// still follow the template: undeclared ones are not pulled in.
+		if upgrade {
 			if optionalVirtualPackages[virtual] {
 				if _, declared := m.SystemPackages[virtual]; !declared {
 					continue
@@ -58,11 +55,11 @@ func resolveSystemPackages(osm *manifest.OSManifest, m *manifest.Manifest, lates
 
 // resolvePipPackages maps the ordered pip packages to versions from the stack
 // manifest. Empty versions are resolved by pip and recorded in the lock. In
-// latest mode all versions are deliberately empty.
-func resolvePipPackages(m *manifest.Manifest, latest bool) (map[string]string, error) {
+// upgrade mode all versions are deliberately empty.
+func resolvePipPackages(m *manifest.Manifest, upgrade bool) (map[string]string, error) {
 	out := make(map[string]string, len(pipPackages))
 	for _, name := range pipPackages {
-		if latest {
+		if upgrade {
 			out[name] = ""
 			continue
 		}

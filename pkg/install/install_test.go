@@ -546,7 +546,7 @@ func containsArg(args []string, want string) bool {
 const latestHeadSHA = "fedcba9876543210fedcba9876543210fedcba98"
 
 // latestAwareRunner extends cloneAwareRunner to answer `git ls-remote --symref`
-// with a programmed HEAD SHA so the --latest path can resolve git components.
+// with a programmed HEAD SHA so the upgrade path can resolve git components.
 func latestAwareRunner() *packagemanager.MockRunner {
 	r := &packagemanager.MockRunner{}
 	r.RunFunc = func(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -572,12 +572,12 @@ func latestAwareRunner() *packagemanager.MockRunner {
 	return r
 }
 
-func TestInstallLatestUnpinned(t *testing.T) {
+func TestInstallUpgradeUnpinned(t *testing.T) {
 	root, osRelease := setupRoot(t)
 	runner := latestAwareRunner()
 	orch := withProbes(&Orchestrator{Root: root, Runner: runner, OSReleasePath: osRelease, Logf: func(string, ...any) {}})
 
-	res, err := orch.Install(context.Background(), testRelease, Options{Latest: true})
+	res, err := orch.Install(context.Background(), testRelease, Options{Upgrade: true})
 	if err != nil {
 		t.Fatalf("Install --latest: %v", err)
 	}
@@ -619,7 +619,7 @@ func TestInstallLatestUnpinned(t *testing.T) {
 	}
 }
 
-func TestInstallLatestRequiresForceWhenInstalled(t *testing.T) {
+func TestInstallUpgradeRequiresForceWhenInstalled(t *testing.T) {
 	root, osRelease := setupRoot(t)
 	runner := latestAwareRunner()
 	orch := withProbes(&Orchestrator{Root: root, Runner: runner, OSReleasePath: osRelease, Logf: func(string, ...any) {}})
@@ -627,26 +627,26 @@ func TestInstallLatestRequiresForceWhenInstalled(t *testing.T) {
 	if _, err := orch.Install(context.Background(), testRelease, Options{}); err != nil {
 		t.Fatalf("initial install: %v", err)
 	}
-	if _, err := orch.Install(context.Background(), testRelease, Options{Latest: true}); err == nil {
+	if _, err := orch.Install(context.Background(), testRelease, Options{Upgrade: true}); err == nil {
 		t.Fatalf("expected error refreshing installed release without --force")
 	}
-	res, err := orch.Install(context.Background(), testRelease, Options{Latest: true, Force: true})
+	res, err := orch.Install(context.Background(), testRelease, Options{Upgrade: true, Force: true})
 	if err != nil {
-		t.Fatalf("Install --latest --force: %v", err)
+		t.Fatalf("Install --upgrade --force: %v", err)
 	}
 	if !res.Installed {
 		t.Errorf("expected Installed=true on force refresh, got %+v", res)
 	}
 }
 
-func TestInstallLatestUsesBaseManifest(t *testing.T) {
+func TestInstallUpgradeUsesTemplateManifest(t *testing.T) {
 	root, osRelease := setupRoot(t)
-	// Target release has no manifest of its own; --base supplies the structure.
+	// Target release has no manifest of its own; --like supplies the structure.
 	const target = "2026.06.01"
 	runner := latestAwareRunner()
 	orch := withProbes(&Orchestrator{Root: root, Runner: runner, OSReleasePath: osRelease, Logf: func(string, ...any) {}})
 
-	res, err := orch.Install(context.Background(), target, Options{Latest: true, Base: testRelease})
+	res, err := orch.Install(context.Background(), target, Options{Upgrade: true, Like: testRelease})
 	if err != nil {
 		t.Fatalf("Install --latest --base: %v", err)
 	}
@@ -656,9 +656,9 @@ func TestInstallLatestUsesBaseManifest(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, "versions", target, ".tt-env-installed")); err != nil {
 		t.Errorf("expected target installed into versions/%s: %v", target, err)
 	}
-	// install --latest must not write a manifest for the target.
+	// Upgrading must not write a manifest for the target.
 	if _, err := os.Stat(filepath.Join(root, "releases", target+".json")); !os.IsNotExist(err) {
-		t.Errorf("install --latest must not write releases/%s.json", target)
+		t.Errorf("install --upgrade must not write releases/%s.json", target)
 	}
 }
 
@@ -691,21 +691,21 @@ func gitCheckoutSeen(r *packagemanager.MockRunner, sha string) bool {
 	return false
 }
 
-func TestInstallLatestRejectsMismatchedBaseManifest(t *testing.T) {
+func TestInstallUpgradeRejectsMismatchedTemplateManifest(t *testing.T) {
 	root, osRelease := setupRoot(t)
-	// Base manifest declares a different release than its filename.
+	// Template manifest declares a different release than its filename.
 	mustWrite(t, filepath.Join(root, "releases", "2026.07.01.json"),
 		strings.Replace(testStackManifest, `"release": "2026.05.16"`, `"release": "9999.01.01"`, 1))
 	orch := withProbes(&Orchestrator{Root: root, Runner: latestAwareRunner(), OSReleasePath: osRelease, Logf: func(string, ...any) {}})
 
-	if _, err := orch.Install(context.Background(), "2026.08.01", Options{Latest: true, Base: "2026.07.01"}); err == nil {
+	if _, err := orch.Install(context.Background(), "2026.08.01", Options{Upgrade: true, Like: "2026.07.01"}); err == nil {
 		t.Fatal("expected error for mismatched base manifest release")
 	}
 }
 
-func TestInstallLatestOmitsUndeclaredOptionalPackage(t *testing.T) {
+func TestInstallUpgradeOmitsUndeclaredOptionalPackage(t *testing.T) {
 	root, osRelease := setupRoot(t)
-	// Base manifest omits the optional "metalium" system package.
+	// Template manifest omits the optional "metalium" system package.
 	noMetalium := strings.Replace(testStackManifest, `,
     "metalium": "5.0.0"`, ``, 1)
 	if noMetalium == testStackManifest {
@@ -716,7 +716,7 @@ func TestInstallLatestOmitsUndeclaredOptionalPackage(t *testing.T) {
 	runner := latestAwareRunner()
 	orch := withProbes(&Orchestrator{Root: root, Runner: runner, OSReleasePath: osRelease, Logf: func(string, ...any) {}})
 
-	if _, err := orch.Install(context.Background(), "2026.09.02", Options{Latest: true, Base: "2026.09.01"}); err != nil {
+	if _, err := orch.Install(context.Background(), "2026.09.02", Options{Upgrade: true, Like: "2026.09.01"}); err != nil {
 		t.Fatalf("Install --latest: %v", err)
 	}
 	specs := installSpecs(runner)
@@ -781,19 +781,19 @@ func TestInstallWritesLockPinned(t *testing.T) {
 	}
 }
 
-func TestInstallWritesLockLatest(t *testing.T) {
+func TestInstallWritesLockUpgrade(t *testing.T) {
 	root, osRelease := setupRoot(t)
 	orch := withProbes(&Orchestrator{Root: root, Runner: latestAwareRunner(), OSReleasePath: osRelease, Logf: func(string, ...any) {}})
 
-	if _, err := orch.Install(context.Background(), "2026.06.01", Options{Latest: true, Base: testRelease}); err != nil {
-		t.Fatalf("Install --latest --base: %v", err)
+	if _, err := orch.Install(context.Background(), "2026.06.01", Options{Upgrade: true, Like: testRelease}); err != nil {
+		t.Fatalf("Install --upgrade --like: %v", err)
 	}
 
 	l, err := lock.Read(filepath.Join(root, "versions", "2026.06.01"))
 	if err != nil {
 		t.Fatalf("lock.Read: %v", err)
 	}
-	// Unpinned --latest entries record the probed installed versions.
+	// Unpinned upgrade entries record the probed installed versions.
 	for virtual := range l.SystemPackages {
 		if got := l.SystemPackages[virtual]; got != "9.9.9" {
 			t.Errorf("lock system package %s = %q, want probed 9.9.9", virtual, got)
@@ -807,6 +807,9 @@ func TestInstallWritesLockLatest(t *testing.T) {
 	// Git components are pinned to their resolved remote HEAD.
 	if gc := l.GitComponents["tt-foo"]; gc.Version != latestHeadSHA {
 		t.Errorf("lock git component tt-foo = %+v, want %s", gc, latestHeadSHA)
+	}
+	if got := l.ContainerComponents["tt-metalium-ubuntu24"].ImageTag; got != "sha256:abc123" {
+		t.Errorf("upgrade changed container digest to %q", got)
 	}
 	if l.Source != lock.SourceLatest {
 		t.Errorf("lock source = %q, want latest", l.Source)

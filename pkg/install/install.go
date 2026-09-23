@@ -59,7 +59,7 @@ type Orchestrator struct {
 	// time.Now is used.
 	Now func() time.Time
 	// DpkgVersion and PipShowVersion probe installed versions to resolve
-	// unpinned or --latest packages in the lock. When nil, the runner-backed
+	// unpinned or upgraded packages in the lock. When nil, the runner-backed
 	// capture probes are used. They exist primarily to make lock resolution
 	// testable.
 	DpkgVersion    func(ctx context.Context, name string) (string, bool, error)
@@ -80,14 +80,12 @@ type Options struct {
 	DryRun bool
 	// Force reinstalls an already installed release.
 	Force bool
-	// Latest installs the latest available versions (unpinned system/pip
-	// packages, git components at their remote HEAD) instead of the pinned
-	// versions in the manifest. Base supplies the release structure.
-	Latest bool
-	// Base names the release manifest whose structure (packages, repos, git and
-	// container components) seeds a --latest install. When empty, the release
-	// being installed is used as its own template.
-	Base   string
+	// Upgrade re-resolves system/Python packages and git HEAD while keeping
+	// container references from the template manifest.
+	Upgrade bool
+	// Like names the release manifest whose structure seeds an upgrade.
+	// When empty, the release being installed supplies that structure.
+	Like   string
 	locked *lock.Lock
 }
 
@@ -108,14 +106,13 @@ type plan struct {
 	// managedCommandNames is the set of command names already provided by git or
 	// container component wrappers; they are excluded from system bin links.
 	managedCommandNames map[string]bool
-	// latest reports whether this is a --latest install: system and pip packages
-	// are installed unpinned and git components are pinned to their remote HEAD.
-	latest     bool
+	// upgrade re-resolves host tooling, leaving container references unchanged.
+	upgrade    bool
 	lockReplay bool
 	// Lock provenance, recorded in versions/<release>/manifest.json.
 	release     string
 	source      string // lock.SourceCatalog | lock.SourceLocal | lock.SourceLatest
-	base        string // structure base for a --latest install
+	base        string // structure template for an upgrade
 	catalogRepo string
 	catalogRef  string
 	// m is the manifest the plan was resolved from (intent), and osm the
@@ -126,15 +123,15 @@ type plan struct {
 
 // Install installs the named release. When opts.DryRun is true it resolves and
 // logs the planned actions without staging anything. When opts.Force is true an
-// already installed release is reinstalled. When opts.Latest is true the latest
-// available versions are installed using opts.Base for the release structure.
+// already installed release is reinstalled. Upgrade re-resolves host tooling
+// using opts.Like for the release structure when supplied.
 func (o *Orchestrator) Install(ctx context.Context, release string, opts Options) (version.Result, error) {
 	if err := version.ValidateRelease(release); err != nil {
 		return version.Result{}, err
 	}
 
 	inst := &version.Installer{Root: o.Root}
-	if opts.Force && inst.IsInstalled(release) && !opts.Latest {
+	if opts.Force && inst.IsInstalled(release) && !opts.Upgrade {
 		// Legacy releases installed before #78 have no lock; preserve their
 		// previous manifest/catalog fallback. A present but unreadable lock is
 		// not treated as legacy because that could silently change versions.
@@ -155,10 +152,10 @@ func (o *Orchestrator) Install(ctx context.Context, release string, opts Options
 		return version.Result{}, err
 	}
 
-	// A --latest install would otherwise silently no-op on an already installed
-	// release; require --force so refreshing to latest versions is explicit.
-	if opts.Latest && !opts.DryRun && !opts.Force && inst.IsInstalled(release) {
-		return version.Result{}, fmt.Errorf("install: release %s is already installed; pass --force to refresh it to the latest versions", release)
+	// An upgrade would otherwise silently no-op on an already installed
+	// release; require --force so re-resolution is explicit.
+	if opts.Upgrade && !opts.DryRun && !opts.Force && inst.IsInstalled(release) {
+		return version.Result{}, fmt.Errorf("install: release %s is already installed; pass --force to upgrade its host tooling", release)
 	}
 
 	if opts.DryRun {
@@ -208,8 +205,8 @@ func (o *Orchestrator) Install(ctx context.Context, release string, opts Options
 }
 
 // loadPlanManifest loads the manifest that supplies the install plan. For a
-// normal install this is the release's own manifest; for a --latest install it
-// is opts.Base (defaulting to the release), used only for its structure.
+// normal install this is the release's own manifest; for an upgrade it is
+// opts.Like (defaulting to the release), used only for its structure.
 // Both lookups search the local manifest directory first (local overrides
 // catalog). The second return value reports whether the manifest came from
 // releases.local/ (false means the catalog cache), which the lock records as
@@ -221,19 +218,27 @@ func (o *Orchestrator) loadPlanManifest(release string, opts Options) (*manifest
 	}
 	name := release
 	kind := "release"
-	if opts.Latest {
-		base := opts.Base
-		if base == "" {
-			base = release
-		} else if err := version.ValidateRelease(base); err != nil {
-			return nil, false, err
+	if opts.Upgrade {
+		if opts.Like != "" {
+			if err := version.ValidateRelease(opts.Like); err != nil {
+				return nil, false, err
+			}
+			name = opts.Like
 		}
-		name, kind = base, "base"
+		kind = "template"
 	}
 
 	manifestPath, fromLocal, err := catalog.Path(o.Root, name)
 	if err != nil {
-		return nil, false, fmt.Errorf("install: resolve %s manifest: %w", kind, err)
+		available, _ := catalog.Available(o.Root)
+		candidates := make([]string, 0, len(available))
+		for _, entry := range available {
+			candidates = append(candidates, entry.Release)
+		}
+		if len(candidates) == 0 {
+			candidates = append(candidates, "none (run tt-env update or add a local manifest)")
+		}
+		return nil, false, fmt.Errorf("install: resolve %s manifest: %w; to seed a new release, pass --upgrade --like <release>; available releases: %s", kind, err, strings.Join(candidates, ", "))
 	}
 	m, err := manifest.Load(manifestPath)
 	if err != nil {
@@ -246,11 +251,10 @@ func (o *Orchestrator) loadPlanManifest(release string, opts Options) (*manifest
 }
 
 // buildPlan resolves the OS manifest and the concrete system/pip packages, git
-// components, and container wrappers for the release. When opts.Latest is
+// components, and container wrappers for the release. When opts.Upgrade is
 // true, system and pip packages are installed unpinned and git components are
 // pinned to their remote HEAD. It also records the lock provenance: the
-// release being installed, where the plan manifest came from, and, for a
-// --latest install, its structural base.
+// release being installed, where the plan manifest came from, and its template.
 func (o *Orchestrator) buildPlan(ctx context.Context, m *manifest.Manifest, opts Options, release string, fromLocal bool) (*plan, error) {
 	p, err := o.newPlan(m, opts, release, fromLocal)
 	if err != nil {
@@ -296,7 +300,7 @@ func (o *Orchestrator) newPlan(m *manifest.Manifest, opts Options, release strin
 		pkgManager:    pkgManager,
 		useSystem:     osm.UseSystemPackages(),
 		requiredRepos: osm.RequiredRepos(),
-		latest:        opts.Latest,
+		upgrade:       opts.Upgrade,
 		release:       release,
 		m:             m,
 		osm:           osm,
@@ -307,11 +311,12 @@ func (o *Orchestrator) newPlan(m *manifest.Manifest, opts Options, release strin
 		p.base = opts.locked.Base
 		p.catalogRepo = opts.locked.CatalogRepo
 		p.catalogRef = opts.locked.CatalogRef
-	} else if opts.Latest {
+	} else if opts.Upgrade {
+		// Keep the existing lock source value for compatibility with old locks.
 		p.source = lock.SourceLatest
 		p.base = release
-		if opts.Base != "" {
-			p.base = opts.Base
+		if opts.Like != "" {
+			p.base = opts.Like
 		}
 	} else if fromLocal {
 		p.source = lock.SourceLocal
@@ -334,11 +339,11 @@ func (o *Orchestrator) resolvePlanPackages(p *plan) error {
 		return nil
 	}
 	var err error
-	p.systemPackages, err = resolveSystemPackages(p.osm, p.m, p.latest)
+	p.systemPackages, err = resolveSystemPackages(p.osm, p.m, p.upgrade)
 	if err != nil {
 		return err
 	}
-	p.pipPackages, err = resolvePipPackages(p.m, p.latest)
+	p.pipPackages, err = resolvePipPackages(p.m, p.upgrade)
 	return err
 }
 
@@ -370,7 +375,7 @@ func (o *Orchestrator) resolvePlanGit(ctx context.Context, p *plan) error {
 			return err
 		}
 		version := gc.Version
-		if p.latest {
+		if p.upgrade {
 			resolved, err := (&gitclone.Cloner{Runner: o.Runner}).ResolveHead(ctx, gc.URL)
 			if err != nil {
 				return fmt.Errorf("install: resolve latest revision for git component %q: %w", name, err)
@@ -454,7 +459,7 @@ func (o *Orchestrator) stage(ctx context.Context, stagingDir string, p *plan) er
 
 // writeLock resolves the concrete versions that were just installed and writes
 // them, with provenance, to stagingDir/manifest.json. Pinned entries record
-// their pins (apt/dnf and pip install exactly those); unpinned and --latest
+// their pins (apt/dnf and pip install exactly those); unpinned and upgraded
 // entries are probed after installation, reusing the capture engine's probes.
 func (o *Orchestrator) writeLock(ctx context.Context, stagingDir string, p *plan) error {
 	systemPackages, err := o.resolvedSystemPackages(ctx, p)
@@ -496,7 +501,7 @@ func (o *Orchestrator) writeLock(ctx context.Context, stagingDir string, p *plan
 
 // resolvedSystemPackages maps the virtual system package names to the versions
 // that were installed: the pin when the plan carried one, otherwise the
-// probed installed version (unpinned and --latest installs).
+// probed installed version (unpinned and upgraded installs).
 func (o *Orchestrator) resolvedSystemPackages(ctx context.Context, p *plan) (map[string]string, error) {
 	out := make(map[string]string, len(p.systemPackages))
 	for _, pkg := range p.systemPackages {
@@ -522,7 +527,7 @@ func (o *Orchestrator) resolvedSystemPackages(ctx context.Context, p *plan) (map
 
 // resolvedPipPackages maps the pip package names to the versions that were
 // installed: the pin when the plan carried one, otherwise the version probed
-// from the staging virtualenv (--latest installs).
+// from the staging virtualenv (upgraded installs).
 func (o *Orchestrator) resolvedPipPackages(ctx context.Context, stagingDir string, p *plan) (map[string]string, error) {
 	out := make(map[string]string, len(p.pipPackages))
 	venvPython := filepath.Join(stagingDir, "venv", "bin", "python")
@@ -591,11 +596,11 @@ func (o *Orchestrator) pipShowVersion(ctx context.Context, venvPython, pkg strin
 }
 
 // provisionVenv creates the staging virtualenv and installs the resolved pip
-// packages. In latest mode the packages are installed unpinned so pip selects
+// packages. In upgrade mode the packages are installed unpinned so pip selects
 // the newest compatible versions.
 func (o *Orchestrator) provisionVenv(ctx context.Context, stagingDir string, p *plan) error {
 	prov := &venv.Provisioner{Runner: o.Runner}
-	if p.latest {
+	if p.upgrade {
 		names := make([]string, 0, len(p.pipPackages))
 		for name := range p.pipPackages {
 			names = append(names, name)
@@ -704,10 +709,27 @@ func (o *Orchestrator) logResolutionSummary(p *plan) {
 	mode := "manifest pins and current candidates"
 	if p.lockReplay {
 		mode = "installed lock replay"
-	} else if p.latest {
-		mode = "latest candidates"
+	} else if p.upgrade {
+		mode = "upgrade (current host-tooling candidates)"
 	}
 	o.logf("%s: package resolution: %s", p.release, mode)
+	containerSource := "release manifest"
+	if p.upgrade {
+		if p.useSystem {
+			o.logf("  re-resolve: system and Python packages from configured repositories/indexes; git components at remote HEAD")
+		} else {
+			o.logf("  re-resolve: git components at remote HEAD; system and Python packages are not installed (download path)")
+		}
+		containerSource = "template manifest"
+	} else if p.lockReplay {
+		o.logf("  re-resolve: none; replay host-tooling pins from the installed lock")
+		containerSource = "installed lock"
+	} else if p.useSystem {
+		o.logf("  re-resolve: unpinned system and Python packages only; use manifest pins and git revisions otherwise")
+	} else {
+		o.logf("  re-resolve: none; system and Python packages are not installed (download path)")
+	}
+	o.logf("  keep: container references from the %s (no container digest refresh)", containerSource)
 	unpinnedSystem := []string{}
 	pinnedSystem := []string{}
 	for _, pkg := range p.systemPackages {
@@ -747,15 +769,16 @@ func (o *Orchestrator) logResolutionSummary(p *plan) {
 	for _, name := range containerNames {
 		o.logf("  container %s: %s", name, p.containerRefs[name])
 	}
-	if _, declared := p.m.SystemPackages["metalium"]; !declared {
+	if !p.useSystem {
+		o.logf("  optional metalium: skipped (system packages disabled; download path)")
+	} else if _, declared := p.m.SystemPackages["metalium"]; !declared {
 		o.logf("  optional metalium: skipped (not declared)")
-	} else {
-		concrete, _ := p.osm.ResolvePackage("metalium")
-		if !containsSystemPackage(p.systemPackages, concrete) {
-			o.logf("  optional metalium: skipped (not resolved or no version pin)")
-		}
+	} else if concrete, ok := p.osm.ResolvePackage("metalium"); !ok {
+		o.logf("  optional metalium: skipped (not mapped by OS manifest)")
+	} else if !containsSystemPackage(p.systemPackages, concrete) {
+		o.logf("  optional metalium: skipped (no version pin for ordinary install)")
 	}
-	o.logf("  resolved versions will be written to %s", filepath.Join("versions", p.release, lock.FileName))
+	o.logf("  install lock path when staged: %s", filepath.Join("versions", p.release, lock.FileName))
 }
 
 // installSystemPackages configures required repositories and installs the
@@ -890,8 +913,8 @@ func (o *Orchestrator) resolveOSManifest() (*manifest.OSManifest, string, error)
 func (o *Orchestrator) logDryRun(release string, p *plan) {
 	o.logResolutionSummary(p)
 	mode := ""
-	if p.latest {
-		mode = " (latest available versions)"
+	if p.upgrade {
+		mode = " (upgrading host tooling)"
 	}
 	o.logf("[dry-run] Would install release %s%s (OS manifest %s, package manager %s)", release, mode, p.osManifestKey, p.pkgManager)
 	if p.useSystem {

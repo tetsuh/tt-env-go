@@ -73,7 +73,20 @@ A non-dry-run install records the resulting resolution in a lock at
 lock is written during staging so it appears atomically with the release. For
 an already-installed release, `--force` replays the pins from an existing lock.
 Legacy releases without a lock fall back to the manifest. Use
-`--latest --force` to intentionally refresh package versions.
+`--upgrade --force` to intentionally re-resolve host tooling. `--latest` is a
+hidden, deprecated alias for `--upgrade`; `--base` is an alias for `--like`.
+Use `--upgrade --like <existing-release>` to seed a new release from another
+manifest, for example:
+
+```sh
+tt-env install 0.77.0 --upgrade --like 0.75.0 --dry-run
+```
+
+Without `--like`, the target release must have its own manifest; no active
+release is selected implicitly. If the manifest is absent, the error suggests
+`--like` and lists available releases. Container references (including digest
+pins) are kept from the chosen template; optional packages absent from it are
+skipped. The dry-run and real install print the same resolution-scope summary.
 
 Before mutation, pinned system and Python package versions are checked against
 the currently configured repositories and indexes. DNF checks cached metadata
@@ -84,10 +97,11 @@ The lock records:
 
 - concrete system-package and Python versions (pinned versions and resolved
   candidates),
-- git components at their resolved revisions (remote HEAD for `--latest`),
+- git components at their resolved revisions (remote HEAD for `--upgrade`),
 - the container components as installed, and
 - provenance: `source` (`catalog` | `local` | `latest`), the `base` for a
-  `--latest` install, the catalog repository and ref when known, and the
+  `--upgrade` install (stored as `latest` for lock compatibility), the catalog
+  repository and ref when known, and the
   install timestamp.
 
 `tt-env list` and `tt-env status` show this provenance. For example, `list`

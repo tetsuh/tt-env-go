@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`install`** resolves unpinned system and Python packages to candidates
   from configured repositories and indexes, and records the resulting versions
   in a lock at `versions/<release>/manifest.json`. `--force` on a locked release
-  replays its pins; `--latest --force` intentionally refreshes package versions.
+  replays its pins; `--upgrade --force` intentionally re-resolves host tooling.
   Pinned package availability is checked before mutation against configured
   repositories and indexes (DNF uses cached metadata only, so a required
   repository not yet configured can block installation). Locks also record git
@@ -21,6 +21,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `diff` resolves an installed release to its lock.
 - **`update`** records the fetched catalog's provenance (repository and ref) in
   `manifests/catalog_source.json`, cited by install-time locks.
+
+### Changed
+
+- **`install --upgrade`** replaces `--latest` (kept as a hidden deprecated alias):
+  it re-resolves host system/Python packages and git HEAD, but retains container
+  references from the template manifest. `--like` replaces `--base` (alias kept)
+  for choosing that template. Both dry-run and real installs summarize the
+  resolution scope and explain skipped optional packages; a missing manifest
+  lists available releases and suggests `--upgrade --like`.
 
 ### Fixed
 
