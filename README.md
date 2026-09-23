@@ -29,6 +29,7 @@ tt-env-go/
     ├── buildinfo/       # Build version metadata (set via -ldflags)
     ├── manifest/        # Release JSON schema & OS parsing
     ├── catalog/         # Catalog vs. local manifest lookup (releases.local/)
+    ├── lock/            # Install-time lock (versions/<release>/manifest.json)
     ├── package_manager/ # Apt / Dnf adapters
     ├── version/         # Stack release install / use / list / remove
     ├── shims/           # Wrapper & shim generator
@@ -58,7 +59,33 @@ go build -o tt-env ./cmd/tt-env
 Manifest lookups (`install`, `capture --base`, `diff`, `list`) search both
 locations; a local manifest overrides a catalog manifest with the same release
 name. `tt-env update` moves any file in `releases/` that the fetched catalog
-does not carry into `releases.local/` instead of deleting it.
+does not carry into `releases.local/` instead of deleting it, and records the
+fetched catalog's provenance (repository and ref) in
+`manifests/catalog_source.json`.
+
+## Install-time locks
+
+A catalog manifest states *intent* — which packages and versions an install
+should resolve. Every `tt-env install` also records *resolution* in a lock at
+`versions/<release>/manifest.json`, written during staging so it appears
+atomically with the release:
+
+- concrete system-package and Python versions (pins as installed; unpinned and
+  `--latest` entries probed after installation, reusing the capture probes),
+- git components at their resolved revisions (remote HEAD for `--latest`),
+- the container components as installed, and
+- provenance: `source` (`catalog` | `local` | `latest`), the `base` for a
+  `--latest` install, the catalog repository and ref when known, and the
+  install timestamp.
+
+`tt-env list` and `tt-env status` show this provenance. For example, `list`
+prints `2026.05.16 (from catalog tetsuh/tt-env-manifests@main, resolved
+2026-09-23) [installed]`; the `[installed]` marker is specific to `list` (the
+`status` command shows its own installed-release summary). `tt-env diff`
+resolves an installed release to its lock, so a diff can compare the actually
+installed versions against catalog intent.
+Releases installed before locks existed simply have no lock and fall back to
+the manifest catalog.
 
 ## Releases
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"strings"
 	"testing"
 
 	packagemanager "github.com/tetsuh/tt-env-go/pkg/package_manager"
@@ -26,7 +27,7 @@ func TestDefaultDpkgVersion(t *testing.T) {
 		return []byte("ii  1.2.3-1\n"), nil
 	}
 	c := &Capturer{Runner: runner}
-	v, ok, err := c.defaultDpkgVersion(context.Background(), "pkg")
+	v, ok, err := DpkgQuery(context.Background(), c.runner(), "pkg")
 	if err != nil || !ok || v != "1.2.3-1" {
 		t.Fatalf("got %q, %v, %v", v, ok, err)
 	}
@@ -39,7 +40,7 @@ func TestDefaultDpkgVersionResidualConfig(t *testing.T) {
 		return []byte("rc  1.2.3-1\n"), nil
 	}
 	c := &Capturer{Runner: runner}
-	if _, ok, err := c.defaultDpkgVersion(context.Background(), "pkg"); err != nil || ok {
+	if _, ok, err := DpkgQuery(context.Background(), c.runner(), "pkg"); err != nil || ok {
 		t.Fatalf("residual-config package must be not-installed, got ok=%v err=%v", ok, err)
 	}
 }
@@ -50,7 +51,7 @@ func TestDefaultDpkgVersionNotInstalled(t *testing.T) {
 		return nil, runExit(t, 1) // dpkg-query exits 1 for unknown packages
 	}
 	c := &Capturer{Runner: runner}
-	_, ok, err := c.defaultDpkgVersion(context.Background(), "pkg")
+	_, ok, err := DpkgQuery(context.Background(), c.runner(), "pkg")
 	if err != nil || ok {
 		t.Fatalf("expected not-installed, got ok=%v err=%v", ok, err)
 	}
@@ -62,8 +63,43 @@ func TestDefaultDpkgVersionPropagatesTransientError(t *testing.T) {
 		return nil, context.Canceled // could not run the probe at all
 	}
 	c := &Capturer{Runner: runner}
-	if _, _, err := c.defaultDpkgVersion(context.Background(), "pkg"); err == nil {
+	if _, _, err := DpkgQuery(context.Background(), c.runner(), "pkg"); err == nil {
 		t.Fatal("expected transient runner error to propagate, got nil")
+	}
+}
+
+func TestRpmQueryInstalledVersion(t *testing.T) {
+	runner := &packagemanager.MockRunner{}
+	runner.RunFunc = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name != "rpm" || strings.Join(args, " ") != "-q --qf %{VERSION}-%{RELEASE} -- pkg" {
+			t.Fatalf("rpm query = %s %v", name, args)
+		}
+		return []byte("1.2.3-4.fc42\n"), nil
+	}
+	version, installed, err := RpmQuery(context.Background(), runner, "pkg")
+	if err != nil || !installed || version != "1.2.3-4.fc42" {
+		t.Fatalf("RpmQuery() = %q, %v, %v", version, installed, err)
+	}
+}
+
+func TestRpmQueryNotInstalled(t *testing.T) {
+	runner := &packagemanager.MockRunner{}
+	runner.RunFunc = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		return []byte("package pkg is not installed\n"), runExit(t, 1)
+	}
+	version, installed, err := RpmQuery(context.Background(), runner, "pkg")
+	if err != nil || installed || version != "" {
+		t.Fatalf("RpmQuery() = %q, %v, %v; want absent", version, installed, err)
+	}
+}
+
+func TestRpmQueryPropagatesTransientError(t *testing.T) {
+	runner := &packagemanager.MockRunner{}
+	runner.RunFunc = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		return nil, context.Canceled
+	}
+	if _, _, err := RpmQuery(context.Background(), runner, "pkg"); err == nil {
+		t.Fatal("expected transient runner error to propagate")
 	}
 }
 
@@ -73,7 +109,7 @@ func TestDefaultPipShowVersion(t *testing.T) {
 		return []byte("Name: tt-smi\nVersion: 5.2.0\nSummary: x\n"), nil
 	}
 	c := &Capturer{Runner: runner}
-	v, ok, err := c.defaultPipShowVersion(context.Background(), "/venv/python", "tt-smi")
+	v, ok, err := PipShow(context.Background(), c.runner(), "/venv/python", "tt-smi")
 	if err != nil || !ok || v != "5.2.0" {
 		t.Fatalf("got %q, %v, %v", v, ok, err)
 	}
@@ -85,7 +121,7 @@ func TestDefaultPipShowVersionRejectsMalformed(t *testing.T) {
 		return []byte("Version: bad version!!\n"), nil
 	}
 	c := &Capturer{Runner: runner}
-	if _, _, err := c.defaultPipShowVersion(context.Background(), "/venv/python", "tt-smi"); err == nil {
+	if _, _, err := PipShow(context.Background(), c.runner(), "/venv/python", "tt-smi"); err == nil {
 		t.Fatal("expected error for malformed pip version")
 	}
 }
@@ -96,7 +132,7 @@ func TestDefaultPipShowVersionNotInstalled(t *testing.T) {
 		return nil, runExit(t, 1) // pip show exits 1 when the package is absent
 	}
 	c := &Capturer{Runner: runner}
-	_, ok, err := c.defaultPipShowVersion(context.Background(), "/venv/python", "tt-smi")
+	_, ok, err := PipShow(context.Background(), c.runner(), "/venv/python", "tt-smi")
 	if err != nil || ok {
 		t.Fatalf("expected not-installed, got ok=%v err=%v", ok, err)
 	}
@@ -108,7 +144,7 @@ func TestDefaultPipShowVersionPropagatesTransientError(t *testing.T) {
 		return nil, context.Canceled
 	}
 	c := &Capturer{Runner: runner}
-	if _, _, err := c.defaultPipShowVersion(context.Background(), "/venv/python", "tt-smi"); err == nil {
+	if _, _, err := PipShow(context.Background(), c.runner(), "/venv/python", "tt-smi"); err == nil {
 		t.Fatal("expected transient runner error to propagate, got nil")
 	}
 }

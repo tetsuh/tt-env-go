@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/tetsuh/tt-env-go/pkg/kmd"
+	"github.com/tetsuh/tt-env-go/pkg/lock"
 	"github.com/tetsuh/tt-env-go/pkg/version"
 )
 
@@ -21,6 +22,9 @@ type Summary struct {
 	ActiveRelease string
 	// InstalledReleases lists installed release names.
 	InstalledReleases []string
+	// Locks maps installed release names to their install-time locks, when
+	// present; releases installed before locks existed are absent.
+	Locks map[string]*lock.Lock
 	// KMD is the Tenstorrent kernel module version state.
 	KMD kmd.ModuleVersion
 	// SecureBoot is the UEFI Secure Boot state.
@@ -60,6 +64,14 @@ func (r *Reporter) Report(ctx context.Context) Summary {
 	}
 	if installed, err := r.Installer.List(); err == nil {
 		s.InstalledReleases = installed
+		s.Locks = make(map[string]*lock.Lock, len(installed))
+		for _, release := range installed {
+			if l, err := lock.Read(r.Installer.ReleaseDir(release)); err == nil {
+				s.Locks[release] = l
+			}
+			// A missing lock (release predates locks) or an unreadable one is
+			// skipped: status stays best-effort and never aborts.
+		}
 	}
 
 	s.KMD = r.KMDVersion.Probe(ctx)
@@ -88,12 +100,26 @@ func (s Summary) Render(w io.Writer) error {
 	}
 
 	fmt.Fprintf(&b, "  Active release:     %s\n", orNone(s.ActiveRelease))
-	fmt.Fprintf(&b, "  Installed releases: %s\n", orNone(strings.Join(s.InstalledReleases, ", ")))
+	fmt.Fprintf(&b, "  Installed releases: %s\n", orNone(s.renderInstalledReleases()))
 	fmt.Fprintf(&b, "  KMD module:         %s\n", kmdVersionLabel(s.KMD))
 	fmt.Fprintf(&b, "  Secure Boot:        %s\n", string(s.SecureBoot.State))
 
 	_, err := io.WriteString(w, b.String())
 	return err
+}
+
+// renderInstalledReleases renders the installed release names with their lock
+// provenance, e.g. "2026.05.16 (from catalog, resolved 2026-09-22)".
+func (s Summary) renderInstalledReleases() string {
+	parts := make([]string, 0, len(s.InstalledReleases))
+	for _, release := range s.InstalledReleases {
+		if l, ok := s.Locks[release]; ok {
+			parts = append(parts, fmt.Sprintf("%s (%s)", release, l.Describe()))
+			continue
+		}
+		parts = append(parts, release)
+	}
+	return strings.Join(parts, ", ")
 }
 
 func deviceLabel(d Device) string {

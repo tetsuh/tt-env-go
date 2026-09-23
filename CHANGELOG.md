@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`install`** records the resolved versions of every install in a lock at
+  `versions/<release>/manifest.json`: concrete system-package and Python
+  versions (unpinned and `--latest` entries probed after installation), git
+  revisions, container components, and provenance (`source`, `base`, catalog
+  repository and ref, install timestamp). `list` and `status` show the
+  provenance, and `diff` resolves an installed release to its lock.
+- **`update`** records the fetched catalog's provenance (repository and ref) in
+  `manifests/catalog_source.json`, cited by install-time locks.
+
 ### Fixed
 
 - **`update`** no longer deletes locally captured release manifests: manifests
